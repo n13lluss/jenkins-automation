@@ -28,6 +28,9 @@ public sealed class VaultOptions
     /// <summary>AppRole is preferred; a token is accepted for local development.</summary>
     public string? RoleId { get; set; }
     public string? SecretId { get; set; }
+    /// <summary>Files holding the AppRole credentials, e.g. written by an init container or a secrets mount.</summary>
+    public string? RoleIdFile { get; set; }
+    public string? SecretIdFile { get; set; }
     public string? Token { get; set; }
 }
 

@@ -11,6 +11,8 @@ public sealed class OutboundOptions
     public bool AllowHttp { get; set; }
     /// <summary>When set, only these hosts may be called. Listed hosts may resolve to private addresses.</summary>
     public List<string> AllowedHosts { get; set; } = [];
+    /// <summary>Hosts that may resolve to private addresses without restricting other hosts (e.g. an internal Bitbucket).</summary>
+    public List<string> PrivateHosts { get; set; } = [];
     /// <summary>Use the system proxy (HTTPS_PROXY). Address checks then apply to the target host name only.</summary>
     public bool UseProxy { get; set; }
 }
@@ -38,14 +40,14 @@ public static class OutboundGuard
         if (uri.Scheme != Uri.UriSchemeHttps && !(options.AllowHttp && uri.Scheme == Uri.UriSchemeHttp))
             throw new OutboundBlockedException("Only https URLs are allowed.");
         if (!string.IsNullOrEmpty(uri.UserInfo)) throw new OutboundBlockedException("Credentials in URLs are not allowed.");
-        if (options.AllowedHosts.Count > 0 && !IsListed(uri.Host, options))
+        if (options.AllowedHosts.Count > 0 && !options.AllowedHosts.Contains(uri.Host, StringComparer.OrdinalIgnoreCase))
             throw new OutboundBlockedException($"Host {uri.Host} is not in the outbound allow-list.");
         if (IPAddress.TryParse(uri.Host.Trim('[', ']'), out var literal) && IsBlocked(literal, options, listed: IsListed(uri.Host, options)))
             throw new OutboundBlockedException("That address is not allowed.");
     }
 
     private static bool IsListed(string host, OutboundOptions options) =>
-        options.AllowedHosts.Any(h => string.Equals(h, host, StringComparison.OrdinalIgnoreCase));
+        options.AllowedHosts.Concat(options.PrivateHosts).Any(h => string.Equals(h, host, StringComparison.OrdinalIgnoreCase));
 
     public static bool IsBlocked(IPAddress ip, OutboundOptions options, bool listed)
     {
