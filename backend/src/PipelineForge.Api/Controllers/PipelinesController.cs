@@ -80,8 +80,11 @@ public sealed class PipelinesController(
     [RequestSizeLimit(512 * 1024)]
     public async Task<GenerationResponse> Preview(Guid workspaceId, PreviewRequest r, CancellationToken ct)
     {
+        var config = r.Config;
+        if (r.BuiltInPresetId is { } builtIn)
+            config = Core.Presets.PresetMerger.Apply(config, (Core.Presets.BuiltInPresets.Find(builtIn) ?? throw new NotFoundException("Built-in preset not found.")).ConfigJson);
         var preset = await generation.PresetAsync(workspaceId, r.PresetId, ct);
-        var config = GenerationService.ApplyPreset(r.Config, preset, r.ApplyPreset);
+        config = GenerationService.ApplyPreset(config, preset, r.ApplyPreset);
         return GenerationService.Generate(config, preset, r.Files);
     }
 
@@ -222,8 +225,16 @@ public sealed class PipelinesController(
         };
         var conn = await resolver.JenkinsAsync(workspaceId, r.JenkinsConnectionId, ct);
         var url = await jenkins.UpsertMultibranchJobAsync(conn, new MultibranchJob(r.JobName, kind, project.Repository, r.ScmCredentialId, serverUrl), ct);
-        await audit.WriteAsync("jenkins.job", workspaceId, r.JobName, detail: url, ct: ct);
-        return new JenkinsJobResponse(url);
+        string? scheduledUrl = null;
+        if (r.CreateScheduledJob)
+        {
+            var config = JsonSerializer.Deserialize<PipelineConfig>(project.ConfigJson, JsonDefaults.Options)!;
+            if (!config.Security.Dast.Schedule.Enabled) return BadRequest(new ProblemDetails { Title = "Scheduled scans are not enabled for this pipeline." });
+            scheduledUrl = await jenkins.UpsertMultibranchJobAsync(conn,
+                new MultibranchJob($"{r.JobName}-scheduled", kind, project.Repository, r.ScmCredentialId, serverUrl, "Jenkinsfile.scheduled"), ct);
+        }
+        await audit.WriteAsync("jenkins.job", workspaceId, r.JobName, detail: scheduledUrl is null ? url : $"{url} {scheduledUrl}", ct: ct);
+        return new JenkinsJobResponse(url, scheduledUrl);
     }
 
     [HttpPost("pipelines/{id:guid}/ai-review")]

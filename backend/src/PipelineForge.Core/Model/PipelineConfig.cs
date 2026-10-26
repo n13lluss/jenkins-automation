@@ -10,8 +10,14 @@ public sealed class PipelineConfig
     public AgentConfig Agent { get; set; } = new();
     public List<ModuleConfig> Modules { get; set; } = [];
     public RegistryConfig? Registry { get; set; }
+    /// <summary>Resolve all dependencies through a controlled proxy (Nexus, Artifactory) instead of public registries.</summary>
+    public DependencyProxyConfig? DependencyProxy { get; set; }
     public QualityConfig Quality { get; set; } = new();
     public SecurityConfig Security { get; set; } = new();
+    public SigningConfig Signing { get; set; } = new();
+    public RateLimitCheckConfig RateLimit { get; set; } = new();
+    public TicketingConfig Ticketing { get; set; } = new();
+    public StageTriggers Triggers { get; set; } = new();
     public ComplianceConfig Compliance { get; set; } = new();
     public List<EnvironmentConfig> Environments { get; set; } = [];
     public AiReviewConfig AiReview { get; set; } = new();
@@ -78,14 +84,159 @@ public enum Severity { Low, Medium, High, Critical }
 
 public enum DastMode { Baseline, Full, Api }
 
+public enum SecretScanScope { History, Diff }
+
+public enum ScannerTool { Trivy, Snyk }
+
+public enum ProxyType { Nexus, Artifactory }
+
+/// <summary>
+/// Repository manager acting as the single source of dependencies. Paths are relative to
+/// <see cref="BaseUrl"/>; leave one empty to keep that ecosystem on its default registry.
+/// </summary>
+public sealed class DependencyProxyConfig
+{
+    public ProxyType Type { get; set; } = ProxyType.Nexus;
+    public string BaseUrl { get; set; } = "https://nexus.example.com";
+    /// <summary>Username with password credential for the repository manager.</summary>
+    public string CredentialId { get; set; } = "nexus-credentials";
+    public string? MavenPath { get; set; } = "repository/maven-public";
+    public string? NpmPath { get; set; } = "repository/npm-proxy";
+    public string? PypiPath { get; set; } = "repository/pypi-proxy/simple";
+    public string? NugetPath { get; set; } = "repository/nuget-proxy/index.json";
+    public string? GoPath { get; set; } = "repository/go-proxy";
+    public string? ComposerPath { get; set; } = "repository/packagist-proxy";
+}
+
+/// <summary>Cosign key-pair signing: sign the pushed digest, verify it before every deploy.</summary>
+public sealed class SigningConfig
+{
+    public bool Enabled { get; set; }
+    /// <summary>Secret file credential holding cosign.key.</summary>
+    public string KeyCredentialId { get; set; } = "cosign-key";
+    /// <summary>Secret text credential holding the key password.</summary>
+    public string PasswordCredentialId { get; set; } = "cosign-password";
+    /// <summary>Public key committed to the repository and used for verification.</summary>
+    public string PublicKeyPath { get; set; } = "security/cosign.pub";
+    /// <summary>Upload signatures to the public Rekor transparency log. Off for private images.</summary>
+    public bool TransparencyLog { get; set; }
+}
+
+public enum LoginFormat { Form, Json }
+
+/// <summary>How to log in to the application under test (authenticated DAST, rate-limit check).</summary>
+public sealed class LoginConfig
+{
+    public string LoginPath { get; set; } = "/login";
+    public LoginFormat Format { get; set; } = LoginFormat.Form;
+    public string UsernameField { get; set; } = "username";
+    public string PasswordField { get; set; } = "password";
+    public string LogoutPath { get; set; } = "/logout";
+}
+
+/// <summary>Start the just-built image on the agent and run a passive ZAP scan against it.</summary>
+public sealed class EphemeralDastConfig
+{
+    public bool Enabled { get; set; }
+    /// <summary>Module whose image is scanned; the first image module when empty.</summary>
+    public string? Module { get; set; }
+    public int ContainerPort { get; set; } = 8080;
+    public string HealthPath { get; set; } = "/actuator/health";
+    /// <summary>Kubernetes image pull secret for the scan pod (private registries).</summary>
+    public string? ImagePullSecret { get; set; }
+    /// <summary>KEY=value pairs for the app, e.g. SPRING_PROFILES_ACTIVE=dast. No secrets: these are written into the pipeline.</summary>
+    public List<string> AppEnvironment { get; set; } = [];
+}
+
+/// <summary>Two-role authenticated scan: ZAP active scan plus an access-control and session check.</summary>
+public sealed class AuthenticatedDastConfig
+{
+    public bool Enabled { get; set; }
+    /// <summary>Environment to scan; needs a URL.</summary>
+    public string Environment { get; set; } = "test";
+    public LoginConfig Login { get; set; } = new();
+    /// <summary>Username with password credential of the low-privileged test account.</summary>
+    public string UserCredentialId { get; set; } = "zap-user";
+    /// <summary>Username with password credential of the admin test account.</summary>
+    public string AdminCredentialId { get; set; } = "zap-admin";
+    /// <summary>A page any logged-in user may open; used for logout and session checks.</summary>
+    public string ProtectedPath { get; set; } = "/";
+    /// <summary>Paths only admins may reach; the user role must be refused.</summary>
+    public List<string> AdminOnlyPaths { get; set; } = ["/admin"];
+    /// <summary>Also run before the production approval (in addition to the schedule).</summary>
+    public bool BeforeProduction { get; set; }
+}
+
+/// <summary>Scheduled scans of a live environment, independent of code changes (Jenkinsfile.scheduled).</summary>
+public sealed class ScheduledScanConfig
+{
+    public bool Enabled { get; set; }
+    public string Environment { get; set; } = "test";
+    public string BaselineCron { get; set; } = "H */6 * * *";
+    /// <summary>The first scheduled run each day also runs the authenticated scan.</summary>
+    public bool AuthenticatedDaily { get; set; } = true;
+}
+
+/// <summary>Post-deploy check that the login endpoint throttles or locks out repeated failures.</summary>
+public sealed class RateLimitCheckConfig
+{
+    public bool Enabled { get; set; }
+    public LoginConfig Login { get; set; } = new();
+    /// <summary>A username that does not exist or is a dedicated probe account, never a real user.</summary>
+    public string TestUsername { get; set; } = "pf-ratelimit-probe";
+    public int Attempts { get; set; } = 20;
+    public List<int> ExpectedStatuses { get; set; } = [429, 423];
+    public List<string> Environments { get; set; } = ["test"];
+}
+
+public enum TicketProvider { None, Jira }
+
+public enum TicketSource { SecretScan, Dependencies, Container, Iac, Sonar, Dast, AccessControl, AiReview }
+
+/// <summary>Turn findings into deduplicated tickets. Snyk can also create Jira tickets natively.</summary>
+public sealed class TicketingConfig
+{
+    public TicketProvider Provider { get; set; } = TicketProvider.None;
+    /// <summary>Site name configured in the Jira Steps plugin.</summary>
+    public string JiraSite { get; set; } = "jira";
+    public string ProjectKey { get; set; } = "SEC";
+    public string IssueType { get; set; } = "Bug";
+    public Severity MinSeverity { get; set; } = Severity.High;
+    public int MaxPerBuild { get; set; } = 10;
+    /// <summary>Also file tickets from pull request builds (otherwise deploy branches and scheduled runs only).</summary>
+    public bool PullRequests { get; set; }
+    public List<TicketSource> Sources { get; set; } =
+        [TicketSource.SecretScan, TicketSource.Dependencies, TicketSource.Container, TicketSource.Iac, TicketSource.Sonar, TicketSource.Dast, TicketSource.AccessControl];
+}
+
+public enum StageTrigger { Always, PullRequests, DeployBranches }
+
+/// <summary>When groups of CI stages run. Build and tests always run.</summary>
+public sealed class StageTriggers
+{
+    /// <summary>Static analysis, dependency, secret, license and IaC scans.</summary>
+    public StageTrigger Checks { get; set; } = StageTrigger.Always;
+    /// <summary>Image build, image scan and ephemeral DAST.</summary>
+    public StageTrigger Package { get; set; } = StageTrigger.Always;
+}
+
 public sealed class SecurityConfig
 {
     public bool SecretScan { get; set; } = true;
+    public SecretScanScope SecretScanScope { get; set; } = SecretScanScope.History;
+    /// <summary>Fail on floating or unpinned dependency versions (Maven Enforcer).</summary>
+    public bool DependencyPinning { get; set; }
     public List<DependencyScanner> DependencyScanners { get; set; } = [DependencyScanner.TrivyFs];
     public bool Sbom { get; set; } = true;
     public bool LicenseCheck { get; set; }
     public bool ContainerScan { get; set; } = true;
+    public ScannerTool ContainerScanner { get; set; } = ScannerTool.Trivy;
     public bool IacScan { get; set; }
+    public ScannerTool IacScanner { get; set; } = ScannerTool.Trivy;
+    /// <summary>Skip the IaC scan when no infrastructure files changed.</summary>
+    public bool IacOnlyWhenChanged { get; set; }
+    /// <summary>Register deployed dependencies and images with Snyk for continuous CVE monitoring.</summary>
+    public bool SnykMonitor { get; set; }
     public Severity FailOnSeverity { get; set; } = Severity.High;
     public string NvdApiKeyCredentialId { get; set; } = "nvd-api-key";
     public string SnykCredentialId { get; set; } = "snyk-token";
@@ -100,6 +251,9 @@ public sealed class DastConfig
     public string? ApiSpec { get; set; }
     /// <summary>Environment keys to scan after deploying, e.g. ["test", "acc"].</summary>
     public List<string> Environments { get; set; } = ["test"];
+    public EphemeralDastConfig Ephemeral { get; set; } = new();
+    public AuthenticatedDastConfig Authenticated { get; set; } = new();
+    public ScheduledScanConfig Schedule { get; set; } = new();
 }
 
 public enum ComplianceProfile { None, Iso27001 }

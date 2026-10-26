@@ -20,9 +20,9 @@ public static class ComplianceEnforcer
         new("A.8.15", "Logging", "All scan reports are archived with fingerprints and published as SARIF."),
         new("A.8.25", "Secure development life cycle", "Quality gate enforced before anything is built into an image."),
         new("A.8.28", "Secure coding", "Static analysis (SonarQube/SonarCloud) and secret scanning on every branch and pull request."),
-        new("A.8.29", "Security testing in development and acceptance", "DAST (OWASP ZAP) against test/acceptance environments after deployment."),
+        new("A.8.29", "Security testing in development and acceptance", "DAST (OWASP ZAP) against test/acceptance environments; optional authenticated two-role access-control scan."),
         new("A.8.31", "Separation of development, test and production environments", "Separate DTAP environments, credentials and branch rules."),
-        new("A.8.32", "Change management", "Production deploys only from the release branch, after a recorded manual approval by an authorised group."),
+        new("A.8.32", "Change management", "Production deploys only from the release branch, after a recorded manual approval by an authorised group; deployed images are signed and verified."),
     ];
 
     public static ComplianceResult Apply(PipelineConfig c)
@@ -52,6 +52,9 @@ public static class ComplianceEnforcer
         Set(q.WaitForQualityGate && q.AbortOnQualityGateFailure,
             () => { q.WaitForQualityGate = true; q.AbortOnQualityGateFailure = true; },
             "A.8.25: the quality gate now blocks the pipeline.");
+
+        if (c.Modules.Any(m => m.Dockerfile is not null) && c.Registry is not null && c.Environments.Any(e => e.Deploy.Type != DeployTargetType.None))
+            Set(c.Signing.Enabled, () => c.Signing.Enabled = true, "A.8.32: images are signed with Cosign and verified before every deploy.");
 
         Set(c.Options.DisableConcurrentBuilds, () => c.Options.DisableConcurrentBuilds = true, "A.8.32: concurrent builds disabled.");
         Set(c.Options.BuildsToKeep >= 30, () => c.Options.BuildsToKeep = 30, "A.8.15: build history kept for at least 30 builds.");

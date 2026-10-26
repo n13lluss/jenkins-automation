@@ -23,12 +23,40 @@ public static class StageScriptsWriter
                 def shortSha = sh(script: 'git rev-parse --short=8 HEAD', returnStdout: true).trim()
                 def branch = (env.BRANCH_NAME ?: 'local').replaceAll('[^A-Za-z0-9._-]', '-').take(80)
                 env.IMAGE_TAG = "${branch}-${env.BUILD_NUMBER}-${shortSha}"
+                env.PF_DIFF_BASE = diffBase()
                 def cfg = readYaml(file: 'jenkins/config/environments.yaml')
                 def envs = [:]
                 for (e in (cfg.environments ?: [])) {
                     envs[e.key] = e
                 }
                 return envs
+            }
+
+            // The commit this build is compared with: the merge parent of a PR merge build, the PR target,
+            // or the last successful build. Empty when unknown, which means "scan everything".
+            def diffBase() {
+                def base = sh(returnStdout: true, script: '''
+                    if [ "$(git rev-list --parents -n 1 HEAD | wc -w)" -gt 2 ]; then
+                        git rev-parse HEAD^1
+                    elif [ -n "${CHANGE_TARGET:-}" ] && git rev-parse -q --verify "refs/remotes/origin/${CHANGE_TARGET}" >/dev/null; then
+                        git merge-base HEAD "refs/remotes/origin/${CHANGE_TARGET}"
+                    elif [ -n "${GIT_PREVIOUS_SUCCESSFUL_COMMIT:-}" ] && git cat-file -e "${GIT_PREVIOUS_SUCCESSFUL_COMMIT}^{commit}" 2>/dev/null; then
+                        echo "$GIT_PREVIOUS_SUCCESSFUL_COMMIT"
+                    fi
+                ''').trim()
+                return base ==~ '^[0-9a-f]{7,64}$' ? base : ''
+            }
+
+            // True when a file matching the extended regex changed since the diff base (or the base is unknown).
+            def changed(String pattern) {
+                if (!env.PF_DIFF_BASE) {
+                    return true
+                }
+                def hit = false
+                withEnv(["PF_PATTERN=${pattern}"]) {
+                    hit = sh(returnStatus: true, script: 'git diff --name-only "$PF_DIFF_BASE" HEAD | grep -Eq "$PF_PATTERN"') == 0
+                }
+                return hit
             }
 
             // Caches, HOME and temporary credentials live next to the workspace, never inside it,
@@ -51,7 +79,7 @@ public static class StageScriptsWriter
             def safe(value, String pattern, String what) {
                 def v = value == null ? '' : value.toString()
                 if (!(v ==~ pattern)) {
-                    error("Invalid ${what} in jenkins/config/environments.yaml")
+                    error("Invalid ${what}")
                 }
                 return v
             }
@@ -65,9 +93,9 @@ public static class StageScriptsWriter
         if (ctx.IsKubernetes)
         {
             w.Lines("""
-                // kaniko and crane are distroless debug images: their shell is /busybox/sh.
+                // kaniko, crane and cosign are distroless debug images: their shell is /busybox/sh.
                 def inTool(String name, Closure body) {
-                    if (name in ['kaniko', 'crane']) {
+                    if (name in ['kaniko', 'crane', 'cosign']) {
                         container(name: name, shell: '/busybox/sh') {
                             withCiEnv(body)
                         }
@@ -104,6 +132,8 @@ public static class StageScriptsWriter
                 """);
         }
         w.Line();
+        WithProxy(w, ctx);
+        w.Line();
         w.Block("def publishReports()", () =>
         {
             w.Line("archiveArtifacts artifacts: 'reports/**', allowEmptyArchive: true, fingerprint: true");
@@ -112,6 +142,86 @@ public static class StageScriptsWriter
         w.Line().Line("return this");
         return w.ToString();
     }
+
+    /// <summary>
+    /// withProxy wraps every step that resolves dependencies. The repository manager credential
+    /// exists only inside the block; tool-specific config is written to $CI_CACHE by the build script.
+    /// </summary>
+    private static void WithProxy(CodeWriter w, GenerationContext ctx)
+    {
+        if (ctx.Proxy is not { } p)
+        {
+            w.Lines("""
+                def withProxy(Closure body) {
+                    body()
+                }
+                """);
+            return;
+        }
+        string Url(string? path) => path is null ? "" : $"{p.BaseUrl.TrimEnd('/')}/{path.Trim('/')}";
+        w.Line("// Dependencies resolve through the repository manager, never straight from public registries.");
+        w.Block("def withProxy(Closure body)", () =>
+            w.Block($"withCredentials([usernamePassword(credentialsId: {Quote(p.CredentialId)}, usernameVariable: 'PROXY_USER', passwordVariable: 'PROXY_PASSWORD')])", () =>
+            {
+                w.Line("withEnv([");
+                w.Indent(() =>
+                {
+                    w.Line($"{Quote("PROXY_URL=" + p.BaseUrl.TrimEnd('/'))},");
+                    w.Line($"{Quote("PROXY_MAVEN_URL=" + Url(p.MavenPath))},");
+                    w.Line($"{Quote("PROXY_NPM_URL=" + Url(p.NpmPath))},");
+                    w.Line($"{Quote("PROXY_PYPI_URL=" + Url(p.PypiPath))},");
+                    w.Line($"{Quote("PROXY_NUGET_URL=" + Url(p.NugetPath))},");
+                    w.Line($"{Quote("PROXY_GO_URL=" + Url(p.GoPath))},");
+                    w.Line($"{Quote("PROXY_COMPOSER_URL=" + Url(p.ComposerPath))},");
+                });
+                w.Line("]) {");
+                w.Indent(() => w.Line("body()"));
+                w.Line("}");
+            }));
+    }
+
+    /// <summary>Shell lines that point a module's build tool at the repository manager.</summary>
+    public static IEnumerable<string> ProxySetup(GenerationContext ctx, ModuleConfig m)
+    {
+        if (ctx.Proxy is not { } p) yield break;
+        const string netrc = "set +x; host=\"${PROXY_URL#*://}\"; host=\"${host%%/*}\"; host=\"${host%%:*}\"; (umask 077; printf 'machine %s login %s password %s\\n' \"$host\" \"$PROXY_USER\" \"$PROXY_PASSWORD\" > \"$HOME/.netrc\"); set -x";
+        switch (m.Ecosystem)
+        {
+            case Ecosystem.Npm or Ecosystem.Pnpm or Ecosystem.Yarn when p.NpmPath is not null:
+                yield return "set +x";
+                yield return "AUTH=\"$(printf '%s:%s' \"$PROXY_USER\" \"$PROXY_PASSWORD\" | base64 | tr -d '\\n')\"";
+                yield return "(umask 077; printf 'registry=%s/\\nalways-auth=true\\n//%s/:_auth=%s\\n' \"$PROXY_NPM_URL\" \"${PROXY_NPM_URL#*://}\" \"$AUTH\" > \"$CI_CACHE/npmrc\")";
+                yield return "export npm_config_userconfig=\"$CI_CACHE/npmrc\" YARN_NPM_REGISTRY_SERVER=\"$PROXY_NPM_URL\" YARN_NPM_AUTH_IDENT=\"$PROXY_USER:$PROXY_PASSWORD\"";
+                yield return "set -x";
+                break;
+            case Ecosystem.Python when p.PypiPath is not null:
+                yield return netrc;
+                yield return "export PIP_INDEX_URL=\"$PROXY_PYPI_URL\"";
+                break;
+            case Ecosystem.Go when p.GoPath is not null:
+                yield return netrc;
+                yield return "export GOPROXY=\"$PROXY_GO_URL\"";
+                break;
+            case Ecosystem.DotNet when p.NugetPath is not null:
+                yield return "printf '<?xml version=\"1.0\" encoding=\"utf-8\"?>\\n<configuration><packageSources><clear /></packageSources></configuration>\\n' > \"$CI_CACHE/nuget.config\"";
+                yield return "set +x";
+                yield return "dotnet nuget add source \"$PROXY_NUGET_URL\" -n pipelineforge -u \"$PROXY_USER\" -p \"$PROXY_PASSWORD\" --store-password-in-clear-text --configfile \"$CI_CACHE/nuget.config\" >/dev/null";
+                yield return "set -x";
+                break;
+            case Ecosystem.Composer when p.ComposerPath is not null:
+                yield return "composer config --global repositories.packagist.org false";
+                yield return "composer config --global repositories.pipelineforge composer \"$PROXY_COMPOSER_URL\"";
+                yield return "set +x";
+                yield return "host=\"${PROXY_URL#*://}\"; host=\"${host%%/*}\"";
+                yield return "composer config --global http-basic.\"$host\" \"$PROXY_USER\" \"$PROXY_PASSWORD\"";
+                yield return "set -x";
+                break;
+        }
+    }
+
+    /// <summary>Extra Maven arguments when Maven resolves through the proxy.</summary>
+    public static string MavenSettings(GenerationContext ctx) =>
+        ctx.Proxy?.MavenPath is not null ? " -s \"$WORKSPACE/jenkins/config/maven-settings.xml\"" : "";
 
     public static string Build(GenerationContext ctx)
     {
@@ -122,7 +232,7 @@ public static class StageScriptsWriter
         {
             if (c.Modules.Count == 1)
             {
-                ModuleBuild(w, c.Modules[0]);
+                ModuleBuild(w, ctx, c.Modules[0]);
             }
             else
             {
@@ -132,7 +242,7 @@ public static class StageScriptsWriter
                     foreach (var m in c.Modules)
                     {
                         w.Line($"{Quote(m.Name)}: {{");
-                        w.Indent(() => ModuleBuild(w, m));
+                        w.Indent(() => ModuleBuild(w, ctx, m));
                         w.Line("},");
                     }
                     w.Line("failFast: false,");
@@ -163,32 +273,36 @@ public static class StageScriptsWriter
         else w.Block($"dir({Quote(m.Path)})", body);
     }
 
-    private static void ModuleBuild(CodeWriter w, ModuleConfig m)
+    private static void ModuleBuild(CodeWriter w, GenerationContext ctx, ModuleConfig m)
     {
         InModuleDir(w, m, () =>
-            w.Block($"common.inTool({Quote(ToolImages.ContainerName(m))})", () =>
-            {
-                w.Line("sh '''");
-                w.Indent(() => w.Lines(BuildScript(m)));
-                w.Line("'''");
-            }));
+            w.Block("common.withProxy", () =>
+                w.Block($"common.inTool({Quote(ToolImages.ContainerName(m))})", () =>
+                {
+                    w.Line("sh '''");
+                    w.Indent(() => w.Lines(BuildScript(ctx, m)));
+                    w.Line("'''");
+                })));
     }
 
     /// <summary>Shell for one module. Module names are validated to [a-z0-9._-].</summary>
-    public static string BuildScript(ModuleConfig m)
+    public static string BuildScript(GenerationContext ctx, ModuleConfig m)
     {
+        var mvnSettings = MavenSettings(ctx);
+        var gradleInit = ctx.Proxy?.MavenPath is not null ? " --init-script \"$WORKSPACE/jenkins/config/proxy.init.gradle\"" : "";
+        var nugetConfig = ctx.Proxy?.NugetPath is not null ? " --configfile \"$CI_CACHE/nuget.config\"" : "";
         var reports = $"$WORKSPACE/reports/tests/{m.Name}";
         const string noTests = "echo 'Tests disabled for this module'";
         IEnumerable<string> lines = m.Ecosystem switch
         {
             Ecosystem.Maven =>
             [
-                $"mvn -B -ntp -Dmaven.repo.local=\"$CI_CACHE/m2\" verify{(m.RunTests ? "" : " -DskipTests")}",
+                $"mvn -B -ntp{mvnSettings} -Dmaven.repo.local=\"$CI_CACHE/m2\" verify{(m.RunTests ? "" : " -DskipTests")}",
             ],
             Ecosystem.Gradle =>
             [
                 "chmod +x ./gradlew",
-                $"./gradlew --no-daemon --gradle-user-home \"$CI_CACHE/gradle\" {(m.RunTests ? "build" : "assemble")}",
+                $"./gradlew --no-daemon --gradle-user-home \"$CI_CACHE/gradle\"{gradleInit} {(m.RunTests ? "build" : "assemble")}",
             ],
             Ecosystem.Npm or Ecosystem.Pnpm or Ecosystem.Yarn =>
             [
@@ -200,7 +314,7 @@ public static class StageScriptsWriter
             Ecosystem.DotNet =>
             [
                 "export DOTNET_CLI_HOME=\"$CI_CACHE/dotnet\" NUGET_PACKAGES=\"$CI_CACHE/nuget\" DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1",
-                "dotnet restore",
+                $"dotnet restore{nugetConfig}",
                 "dotnet build -c Release --no-restore",
                 m.RunTests
                     ? $"dotnet test -c Release --no-build --logger trx --results-directory \"{reports}\" --collect:\"XPlat Code Coverage\""
@@ -242,7 +356,12 @@ public static class StageScriptsWriter
             ],
             _ => throw new ArgumentOutOfRangeException(nameof(m)),
         };
-        return string.Join("\n", lines);
+        var setup = ProxySetup(ctx, m).ToList();
+        // Node, Python, Go, .NET and PHP read their proxy config before the first command.
+        var all = lines.ToList();
+        var insertAt = m.Ecosystem is Ecosystem.Npm or Ecosystem.Pnpm or Ecosystem.Yarn or Ecosystem.Go or Ecosystem.DotNet or Ecosystem.Composer ? 1 : m.Ecosystem == Ecosystem.Python ? 2 : 0;
+        all.InsertRange(Math.Min(insertAt, all.Count), setup);
+        return string.Join("\n", all);
     }
 
     private static string NodeInstall(Ecosystem e) => e switch
@@ -266,29 +385,30 @@ public static class StageScriptsWriter
                 {
                     case SonarMode.Maven:
                         var mvn = c.Modules[0];
-                        InModuleDir(w, mvn, () => w.Block($"common.inTool({Quote(ToolImages.ContainerName(mvn))})", () =>
+                        InModuleDir(w, mvn, () => w.Block("common.withProxy", () => w.Block($"common.inTool({Quote(ToolImages.ContainerName(mvn))})", () =>
                         {
                             w.Line("sh '''");
                             w.Indent(() => w.Line(
-                                $"mvn -B -ntp -Dmaven.repo.local=\"$CI_CACHE/m2\" org.sonarsource.scanner.maven:sonar-maven-plugin:5.2.0.4988:sonar -Dsonar.projectKey={q.ProjectKey}{(org is null ? "" : $" -Dsonar.organization={org}")}"));
+                                $"mvn -B -ntp{MavenSettings(ctx)} -Dmaven.repo.local=\"$CI_CACHE/m2\" org.sonarsource.scanner.maven:sonar-maven-plugin:5.2.0.4988:sonar -Dsonar.projectKey={q.ProjectKey}{(org is null ? "" : $" -Dsonar.organization={org}")}"));
                             w.Line("'''");
-                        }));
+                        })));
                         break;
                     case SonarMode.DotNet:
                         var net = c.Modules[0];
-                        InModuleDir(w, net, () => w.Block($"common.inTool({Quote(ToolImages.ContainerName(net))})", () =>
+                        InModuleDir(w, net, () => w.Block("common.withProxy", () => w.Block($"common.inTool({Quote(ToolImages.ContainerName(net))})", () =>
                         {
                             w.Line("sh '''");
+                            w.Indent(() => w.Lines(string.Join("\n", ProxySetup(ctx, net))));
                             w.Indent(() => w.Lines($"""
                                 export DOTNET_CLI_HOME="$CI_CACHE/dotnet" NUGET_PACKAGES="$CI_CACHE/nuget" DOTNET_CLI_TELEMETRY_OPTOUT=1 PATH="$PATH:$CI_CACHE/sonar-tools"
                                 command -v dotnet-sonarscanner >/dev/null || dotnet tool install dotnet-sonarscanner --tool-path "$CI_CACHE/sonar-tools"
                                 dotnet-sonarscanner begin /k:"{q.ProjectKey}"{(org is null ? "" : $" /o:\"{org}\"")} /d:sonar.cs.opencover.reportsPaths="**/coverage.opencover.xml"
-                                dotnet build -c Release
+                                dotnet build -c Release{(ctx.Proxy?.NugetPath is not null ? " --configfile \"$CI_CACHE/nuget.config\"" : "")}
                                 dotnet test -c Release --no-build --collect:"XPlat Code Coverage" -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
                                 dotnet-sonarscanner end
                                 """));
                             w.Line("'''");
-                        }));
+                        })));
                         break;
                     default:
                         w.Block("common.inTool('sonar-scanner')", () =>
@@ -297,9 +417,38 @@ public static class StageScriptsWriter
                 }
             }));
         w.Line();
-        w.Block("def gate()", () =>
-            w.Block("timeout(time: 15, unit: 'MINUTES')", () =>
-                w.Line($"waitForQualityGate abortPipeline: {(q.AbortOnQualityGateFailure ? "true" : "false")}")));
+        var export = ctx.TicketsFrom(TicketSource.Sonar);
+        w.Block("def gate(common)", () =>
+        {
+            void Gate() => w.Block("timeout(time: 15, unit: 'MINUTES')", () =>
+                w.Line($"waitForQualityGate abortPipeline: {(q.AbortOnQualityGateFailure ? "true" : "false")}"));
+            if (!export)
+            {
+                Gate();
+                return;
+            }
+            w.Line("try {");
+            w.Indent(Gate);
+            w.Line("} finally {");
+            w.Indent(() => w.Line("exportIssues(common)"));
+            w.Line("}");
+        });
+        if (export)
+        {
+            w.Line();
+            w.Line("// Open issues for the ticketing step; the token never appears on a command line.");
+            w.Block("def exportIssues(common)", () =>
+                w.Block($"withSonarQubeEnv({Quote(q.ServerName)})", () =>
+                    w.Block("common.inTool('curl')", () =>
+                    {
+                        w.Line("sh '''");
+                        w.Indent(() => w.Lines($$"""
+                            set +x
+                            printf 'user = "%s:"\n' "$SONAR_AUTH_TOKEN" | curl -fsS -K - -o reports/sonar-issues.json "$SONAR_HOST_URL/api/issues/search?componentKeys={{q.ProjectKey}}&resolved=false&severities=BLOCKER,CRITICAL,MAJOR&ps=200" || echo '{"issues":[]}' > reports/sonar-issues.json
+                            """));
+                        w.Line("'''");
+                    })));
+        }
         w.Line().Line("return this");
         return w.ToString();
     }
@@ -314,8 +463,36 @@ public static class StageScriptsWriter
 
         w.Block("def secretScan(common)", () =>
             w.Block("common.inTool('gitleaks')", () =>
-                w.Line("sh 'gitleaks git --redact --no-banner --exit-code 1 --config security/.gitleaks.toml --report-format sarif --report-path reports/gitleaks.sarif .'")));
+            {
+                if (s.SecretScanScope == SecretScanScope.Diff)
+                {
+                    w.Line("// Only the commits of this change; the whole history when the base is unknown.");
+                    w.Line("sh '''");
+                    w.Indent(() => w.Lines("""
+                        RANGE=""
+                        if [ -n "$PF_DIFF_BASE" ]; then RANGE="--log-opts=$PF_DIFF_BASE..HEAD"; fi
+                        gitleaks git --redact --no-banner --exit-code 1 --config security/.gitleaks.toml --report-format sarif --report-path reports/gitleaks.sarif $RANGE .
+                        """));
+                    w.Line("'''");
+                }
+                else
+                {
+                    w.Line("sh 'gitleaks git --redact --no-banner --exit-code 1 --config security/.gitleaks.toml --report-format sarif --report-path reports/gitleaks.sarif .'");
+                }
+            }));
         w.Line();
+
+        if (ctx.Pinning)
+        {
+            w.Line("// Maven Enforcer: fails on LATEST, RELEASE, version ranges and unpinned plugins (see security/maven-enforcer.xml).");
+            w.Block("def dependencyPinning(common)", () =>
+            {
+                foreach (var m in c.Modules.Where(m => m.Ecosystem == Ecosystem.Maven))
+                    InModuleDir(w, m, () => w.Block("common.withProxy", () => w.Block($"common.inTool({Quote(ToolImages.ContainerName(m))})", () =>
+                        w.Line($"sh 'mvn -B -ntp{MavenSettings(ctx).Replace("\\", "")} -Dmaven.repo.local=\"$CI_CACHE/m2\" org.apache.maven.plugins:maven-enforcer-plugin:3.5.0:enforce'"))));
+            });
+            w.Line();
+        }
 
         // Every scanner runs, then the stage fails once with the combined result.
         w.Block("def dependencyScan(common)", () =>
@@ -344,9 +521,10 @@ public static class StageScriptsWriter
                             "osv-scanner scan source --recursive --format sarif . > reports/osv.sarif"));
                         break;
                     case DependencyScanner.Snyk:
+                        var mavenOnly = c.Modules.All(m => m.Ecosystem == Ecosystem.Maven) && ctx.Proxy?.MavenPath is not null;
                         w.Block($"withCredentials([string(credentialsId: {Quote(s.SnykCredentialId)}, variable: 'SNYK_TOKEN')])", () =>
-                            w.Block("common.inTool('snyk')", () => Status(w, "Snyk",
-                                $"snyk test --all-projects --severity-threshold={s.FailOnSeverity.ToString().ToLowerInvariant()} --sarif-file-output=reports/snyk.sarif")));
+                            w.Block("common.withProxy", () => w.Block("common.inTool('snyk')", () => Status(w, "Snyk",
+                                $"snyk test --all-projects --severity-threshold={s.FailOnSeverity.ToString().ToLowerInvariant()} --sarif-file-output=reports/snyk.sarif{(mavenOnly ? $" --{MavenSettings(ctx)} -Dmaven.repo.local=\"$CI_CACHE/m2\"" : "")}"))));
                         break;
                     case DependencyScanner.NpmAudit:
                         var level = s.FailOnSeverity == Severity.Medium ? "moderate" : s.FailOnSeverity.ToString().ToLowerInvariant();
@@ -366,11 +544,30 @@ public static class StageScriptsWriter
         w.Block("def licenseCheck(common)", () => w.Block("common.inTool('trivy')", () =>
             w.Line($"sh 'trivy fs --cache-dir \"$CI_CACHE/trivy\" --scanners license --severity {sev} --exit-code 1 --format table --output reports/licenses.txt .'")));
         w.Line();
-        w.Block("def iacScan(common)", () => w.Block("common.inTool('trivy')", () =>
-            w.Line($"sh 'trivy config --cache-dir \"$CI_CACHE/trivy\" --severity {sev} --exit-code 1 --format sarif --output reports/trivy-iac.sarif .'")));
+        w.Block("def iacScan(common)", () =>
+        {
+            if (s.IacOnlyWhenChanged)
+            {
+                w.Block($"if (!common.changed({Quote(IacChangePattern)}))", () =>
+                {
+                    w.Line("echo 'No infrastructure files changed; IaC scan skipped.'");
+                    w.Line("return");
+                });
+            }
+            if (s.IacScanner == ScannerTool.Snyk)
+                w.Block($"withCredentials([string(credentialsId: {Quote(s.SnykCredentialId)}, variable: 'SNYK_TOKEN')])", () =>
+                    w.Block("common.inTool('snyk')", () =>
+                        w.Line($"sh 'snyk iac test --severity-threshold={s.FailOnSeverity.ToString().ToLowerInvariant()} --sarif-file-output=reports/snyk-iac.sarif .'")));
+            else
+                w.Block("common.inTool('trivy')", () =>
+                    w.Line($"sh 'trivy config --cache-dir \"$CI_CACHE/trivy\" --severity {sev} --exit-code 1 --format sarif --output reports/trivy-iac.sarif .'"));
+        });
         w.Line().Line("return this");
         return w.ToString();
     }
+
+    /// <summary>Files that count as infrastructure for "IaC scan only when changed".</summary>
+    public const string IacChangePattern = @"(\.tf|\.tfvars|\.hcl)$|(^|/)(k8s|kubernetes|helm|charts|manifests|deploy|infra|terraform)/|(^|/)Dockerfile";
 
     private static void Status(CodeWriter w, string label, string script)
     {
@@ -421,20 +618,41 @@ public static class StageScriptsWriter
             }
         });
         w.Line();
-        w.Block("def scanImages(common)", () => w.Block("common.inTool('trivy')", () =>
+        w.Block("def scanImages(common)", () =>
         {
-            w.Line("sh '''");
-            w.Indent(() =>
+            if (c.Security.ContainerScanner == ScannerTool.Snyk)
             {
-                foreach (var m in ctx.ImageModules)
-                    w.Line($"trivy image --cache-dir \"$CI_CACHE/trivy\" --input \"$CI_CACHE/images/{m.Name}.tar\" --severity {sev} --ignorefile security/.trivyignore --exit-code 1 --format sarif --output reports/trivy-image-{m.Name}.sarif");
+                w.Block($"withCredentials([string(credentialsId: {Quote(c.Security.SnykCredentialId)}, variable: 'SNYK_TOKEN')])", () =>
+                    w.Block("common.inTool('snyk')", () =>
+                    {
+                        w.Line("sh '''");
+                        w.Indent(() =>
+                        {
+                            foreach (var m in ctx.ImageModules)
+                                w.Line($"snyk container test \"docker-archive:$CI_CACHE/images/{m.Name}.tar\" --severity-threshold={c.Security.FailOnSeverity.ToString().ToLowerInvariant()} --sarif-file-output=reports/snyk-container-{m.Name}.sarif");
+                        });
+                        w.Line("'''");
+                    }));
+                return;
+            }
+            w.Block("common.inTool('trivy')", () =>
+            {
+                w.Line("sh '''");
+                w.Indent(() =>
+                {
+                    foreach (var m in ctx.ImageModules)
+                        w.Line($"trivy image --cache-dir \"$CI_CACHE/trivy\" --input \"$CI_CACHE/images/{m.Name}.tar\" --severity {sev} --ignorefile security/.trivyignore --exit-code 1 --format sarif --output reports/trivy-image-{m.Name}.sarif");
+                });
+                w.Line("'''");
             });
-            w.Line("'''");
-        }));
+        });
         w.Line();
         var regCred = c.Registry?.CredentialId ?? "registry-credentials";
+        var registryCreds = $"usernamePassword(credentialsId: {Quote(regCred)}, usernameVariable: 'REGISTRY_USER', passwordVariable: 'REGISTRY_PASSWORD')";
+        w.Line("// Pushes the scanned tarballs and records each digest; later stages deploy by digest.");
         w.Block("def pushImages(common)", () =>
-            w.Block($"withCredentials([usernamePassword(credentialsId: {Quote(regCred)}, usernameVariable: 'REGISTRY_USER', passwordVariable: 'REGISTRY_PASSWORD')])", () =>
+        {
+            w.Block($"withCredentials([{registryCreds}])", () =>
             {
                 if (ctx.IsKubernetes)
                 {
@@ -447,9 +665,13 @@ public static class StageScriptsWriter
                                 set +x
                                 trap 'rm -f "$HOME/.docker/config.json"' EXIT
                                 printf '%s' "$REGISTRY_PASSWORD" | crane auth login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin
+                                mkdir -p reports/image-digests
                                 """);
                             foreach (var m in ctx.ImageModules)
+                            {
                                 w.Line($"crane push \"$CI_CACHE/images/{m.Name}.tar\" \"$REGISTRY/{m.ImageName}:$IMAGE_TAG\"");
+                                w.Line($"crane digest \"$REGISTRY/{m.ImageName}:$IMAGE_TAG\" > reports/image-digests/{m.Name}.txt");
+                            }
                         });
                         w.Line("'''");
                     });
@@ -466,21 +688,100 @@ public static class StageScriptsWriter
                                 export DOCKER_CONFIG="$CI_CACHE/docker"
                                 trap 'docker logout "$REGISTRY" >/dev/null 2>&1; rm -rf "$DOCKER_CONFIG"' EXIT
                                 printf '%s' "$REGISTRY_PASSWORD" | docker login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin
+                                mkdir -p reports/image-digests
                                 """);
                             foreach (var m in ctx.ImageModules)
+                            {
                                 w.Line($"docker push \"$REGISTRY/{m.ImageName}:$IMAGE_TAG\"");
+                                w.Line("docker inspect --format '{{index .RepoDigests 0}}' \"$REGISTRY/" + m.ImageName + ":$IMAGE_TAG\" | sed 's/.*@//' > reports/image-digests/" + m.Name + ".txt");
+                            }
                         });
                         w.Line("'''");
                     });
                 }
-            }));
+            });
+            foreach (var m in ctx.ImageModules)
+                w.Line($"env.{GenerationContext.DigestVar(m)} = common.safe(readFile('reports/image-digests/{m.Name}.txt').trim(), '^sha256:[a-f0-9]{{64}}$', 'image digest')");
+        });
         w.Line();
+
+        if (ctx.Signing)
+        {
+            var g = c.Signing;
+            var tlog = g.TransparencyLog ? "true" : "false";
+            var cosignCreds = $"{registryCreds}, file(credentialsId: {Quote(g.KeyCredentialId)}, variable: 'COSIGN_KEY'), string(credentialsId: {Quote(g.PasswordCredentialId)}, variable: 'COSIGN_PASSWORD')";
+            w.Line("// Cosign signs the pushed digest, so what is deployed is provably what was built and scanned.");
+            w.Block("def signImages(common)", () =>
+                w.Block($"withCredentials([{cosignCreds}])", () =>
+                    w.Block("common.inTool('cosign')", () =>
+                    {
+                        w.Line("sh '''");
+                        w.Indent(() =>
+                        {
+                            w.Lines("""
+                                set +x
+                                trap 'rm -rf "$HOME/.docker"' EXIT
+                                printf '%s' "$REGISTRY_PASSWORD" | cosign login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin
+                                """);
+                            foreach (var m in ctx.ImageModules)
+                                w.Line($"cosign sign --yes --key \"$COSIGN_KEY\" --tlog-upload={tlog} \"$REGISTRY/{m.ImageName}@${GenerationContext.DigestVar(m)}\"");
+                        });
+                        w.Line("'''");
+                    })));
+            w.Line();
+            w.Line("// Runs before every deploy: refuses images that were not signed with our key.");
+            w.Block("def verifyImages(common)", () =>
+            {
+                foreach (var m in ctx.ImageModules)
+                    w.Line($"common.safe(env.{GenerationContext.DigestVar(m)}, '^sha256:[a-f0-9]{{64}}$', 'image digest (was the image pushed in this build?)')");
+                w.Block($"withCredentials([{registryCreds}])", () =>
+                    w.Block("common.inTool('cosign')", () =>
+                    {
+                        w.Line("sh '''");
+                        w.Indent(() =>
+                        {
+                            w.Lines("""
+                                set +x
+                                trap 'rm -rf "$HOME/.docker"' EXIT
+                                printf '%s' "$REGISTRY_PASSWORD" | cosign login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin
+                                set -x
+                                """);
+                            foreach (var m in ctx.ImageModules)
+                                w.Line($"cosign verify --key {g.PublicKeyPath}{(g.TransparencyLog ? "" : " --insecure-ignore-tlog=true")} \"$REGISTRY/{m.ImageName}@${GenerationContext.DigestVar(m)}\" > /dev/null");
+                        });
+                        w.Line("'''");
+                    }));
+            });
+            w.Line();
+        }
+
+        if (ctx.SnykMonitor)
+        {
+            w.Line("// Registers what was deployed with Snyk, which alerts on newly published CVEs (and can open Jira tickets itself).");
+            w.Block("def monitor(common, Map cfg)", () =>
+                w.Block($"withCredentials([string(credentialsId: {Quote(c.Security.SnykCredentialId)}, variable: 'SNYK_TOKEN'), usernamePassword(credentialsId: {Quote(regCred)}, usernameVariable: 'SNYK_REGISTRY_USERNAME', passwordVariable: 'SNYK_REGISTRY_PASSWORD')])", () =>
+                    w.Block("withEnv([\"SNYK_ENV=${common.safe(cfg.key, '^[a-z][a-z0-9-]*$', 'key')}\"])", () =>
+                        w.Block("common.withProxy", () =>
+                            w.Block("common.inTool('snyk')", () =>
+                            {
+                                w.Line("sh '''");
+                                w.Indent(() =>
+                                {
+                                    w.Line("snyk monitor --all-projects --project-tags=environment=\"$SNYK_ENV\" --target-reference=\"$BRANCH_NAME\" || echo 'Snyk monitor failed; the deploy is not affected.'");
+                                    foreach (var m in ctx.ImageModules)
+                                        w.Line($"snyk container monitor \"$REGISTRY/{m.ImageName}@${GenerationContext.DigestVar(m)}\" --project-tags=environment=\"$SNYK_ENV\" || echo 'Snyk container monitor failed.'");
+                                });
+                                w.Line("'''");
+                            })))));
+            w.Line();
+        }
 
         w.Lines("""
             def deploy(common, Map cfg) {
                 if (cfg == null) {
                     error('Environment missing from jenkins/config/environments.yaml')
                 }
+                {{VERIFY}}
                 switch (cfg.type) {
                     case 'helm':
                         deployHelm(common, cfg)
@@ -497,14 +798,17 @@ public static class StageScriptsWriter
                 if (cfg.url) {
                     smokeTest(common, cfg)
                 }
+                {{MONITOR}}
             }
-            """);
+            """.Replace("{{VERIFY}}", ctx.Signing ? "verifyImages(common)" : "// Images are not signed (signing disabled).")
+               .Replace("{{MONITOR}}", ctx.SnykMonitor ? "monitor(common, cfg)" : ""));
         w.Line();
 
         var types = ctx.DeployEnvironments.Select(e => e.Deploy.Type).ToHashSet();
         if (types.Contains(DeployTargetType.Helm))
         {
-            var sets = string.Join(" ", ctx.ImageModules.Select(m => $"--set-string images.{HelmKey(m.Name)}.tag=\"$IMAGE_TAG\""));
+            var sets = string.Join(" ", ctx.ImageModules.Select(m => $"--set-string images.{HelmKey(m.Name)}.tag=\"$IMAGE_TAG\""
+                + (ctx.Signing ? $" --set-string images.{HelmKey(m.Name)}.digest=\"${GenerationContext.DigestVar(m)}\"" : "")));
             w.Lines($$"""
                 def deployHelm(common, Map cfg) {
                     def h = cfg.helm
@@ -527,13 +831,15 @@ public static class StageScriptsWriter
 
         if (types.Contains(DeployTargetType.DockerSsh))
         {
+            var digestExports = ctx.Signing ? string.Concat(ctx.ImageModules.Select(m => $" {GenerationContext.DigestVar(m)}='${GenerationContext.DigestVar(m)}'")) : "";
             var sshScript = """
                 HOST="${DEPLOY_HOST%%:*}"
                 PORT="${DEPLOY_HOST##*:}"
                 if [ "$PORT" = "$DEPLOY_HOST" ]; then PORT=22; fi
                 scp -P "$PORT" -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o BatchMode=yes "deploy/docker/compose.$DEPLOY_ENV.yml" "$DEPLOY_USER@$HOST:$DEPLOY_DIR/compose.yml"
-                ssh -p "$PORT" -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o BatchMode=yes "$DEPLOY_USER@$HOST" "cd '$DEPLOY_DIR' && export IMAGE_TAG='$IMAGE_TAG' && docker compose -f compose.yml pull && docker compose -f compose.yml up -d --remove-orphans"
+                ssh -p "$PORT" -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o BatchMode=yes "$DEPLOY_USER@$HOST" "cd '$DEPLOY_DIR' && export IMAGE_TAG='$IMAGE_TAG'{{DIGESTS}} && docker compose -f compose.yml pull && docker compose -f compose.yml up -d --remove-orphans"
                 """;
+            sshScript = sshScript.Replace("{{DIGESTS}}", digestExports);
             var runner = ctx.IsKubernetes
                 ? "common.inTool('ssh') {\n" + Pad(16) + "sh 'command -v ssh >/dev/null || apk add --no-cache openssh-client'\n" + Pad(16) + "sshagent(credentials: [sshCred]) {\n" + Pad(20) + "sh '''\n" + Indent(sshScript, 24) + "\n" + Pad(20) + "'''\n" + Pad(16) + "}\n" + Pad(12) + "}"
                 : "common.withCiEnv {\n" + Pad(16) + "sshagent(credentials: [sshCred]) {\n" + Pad(20) + "sh '''\n" + Indent(sshScript, 24) + "\n" + Pad(20) + "'''\n" + Pad(16) + "}\n" + Pad(12) + "}";
@@ -559,7 +865,8 @@ public static class StageScriptsWriter
 
         if (types.Contains(DeployTargetType.AzureAppService))
         {
-            w.Lines("""
+            var azureRef = ctx.Signing ? $"$REGISTRY/$DEPLOY_IMAGE@${GenerationContext.DigestVar(ctx.ImageModules[0])}" : "$REGISTRY/$DEPLOY_IMAGE:$IMAGE_TAG";
+            w.Lines(("""
                 // Prefer workload identity / managed identity where available; a service principal is used here.
                 def deployAzure(common, Map cfg) {
                     def a = cfg.azure
@@ -593,7 +900,7 @@ public static class StageScriptsWriter
                         }
                     }
                 }
-                """);
+                """).Replace("$REGISTRY/$DEPLOY_IMAGE:$IMAGE_TAG", azureRef));
             w.Line();
         }
 
@@ -622,42 +929,236 @@ public static class StageScriptsWriter
 
     public static string Dast(GenerationContext ctx)
     {
-        var d = ctx.Config.Security.Dast;
+        var c = ctx.Config;
+        var d = c.Security.Dast;
         var w = new CodeWriter();
         w.Line(Header).Line();
-        var (script, extra) = d.Mode switch
+        if (ctx.HasDast) ZapScan(w, "scan", d.Mode, d.ApiSpec, "zap");
+        if (ctx.Scheduled) ZapScan(w, "baseline", DastMode.Baseline, null, "zap-scheduled");
+        if (ctx.Ephemeral) EphemeralScan(w, ctx);
+        if (ctx.Authenticated) AuthenticatedScan(w, ctx);
+        if (ctx.RateLimit) RateLimitCheck(w, ctx);
+        w.Line("return this");
+        return w.ToString();
+    }
+
+    private static string LoginEnv(LoginConfig l) =>
+        string.Join(", ", new[]
+        {
+            Quote("LOGIN_PATH=" + l.LoginPath),
+            Quote("LOGOUT_PATH=" + l.LogoutPath),
+            Quote("LOGIN_FORMAT=" + l.Format.ToString().ToLowerInvariant()),
+            Quote("USERNAME_FIELD=" + l.UsernameField),
+            Quote("PASSWORD_FIELD=" + l.PasswordField),
+        });
+
+    private const string TargetEnv = "\"TARGET_URL=${common.safeUrl(cfg.url)}\", \"DAST_ENV=${common.safe(cfg.key, '^[a-z][a-z0-9-]*$', 'key')}\"";
+
+    /// <summary>ZAP against a deployed environment. ZAP writes to /zap/wrk; reports are copied into reports/.</summary>
+    private static void ZapScan(CodeWriter w, string name, DastMode mode, string? apiSpec, string reportPrefix)
+    {
+        var (script, extra) = mode switch
         {
             DastMode.Full => ("zap-full-scan.py -t \"$TARGET_URL\"", ""),
-            DastMode.Api when ConfigValidatorIsUrl(d.ApiSpec) => ("zap-api-scan.py -t \"$API_SPEC\" -f openapi", ""),
-            DastMode.Api => ("zap-api-scan.py -t /zap/wrk/openapi-spec -f openapi", "cp \"$API_SPEC\" /zap/wrk/openapi-spec\n"),
+            DastMode.Api when ConfigValidatorIsUrl(apiSpec) => ("zap-api-scan.py -t \"$API_SPEC\" -f openapi", ""),
+            DastMode.Api => ("zap-api-scan.py -t /zap/wrk/openapi-spec -f openapi", "cp \"$API_SPEC\" /zap/wrk/openapi-spec"),
             _ => ("zap-baseline.py -t \"$TARGET_URL\"", ""),
         };
-        var envList = new List<string>
-        {
-            "\"TARGET_URL=${common.safeUrl(cfg.url)}\"",
-            "\"DAST_ENV=${common.safe(cfg.key, '^[a-z][a-z0-9-]*$', 'key')}\"",
-        };
-        if (d.Mode == DastMode.Api) envList.Add($"\"API_SPEC=\" + {Quote(d.ApiSpec ?? "")}");
+        var envList = TargetEnv + (mode == DastMode.Api ? $", \"API_SPEC=\" + {Quote(apiSpec ?? "")}" : "");
         w.Lines($$"""
-            // ZAP writes to /zap/wrk; reports are copied into reports/ afterwards.
-            def scan(common, Map cfg) {
-                withEnv([{{string.Join(", ", envList)}}]) {
+            def {{name}}(common, Map cfg) {
+                withEnv([{{envList}}]) {
                     common.inTool('zap') {
                         sh '''
                             mkdir -p /zap/wrk reports
                             cp security/zap-rules.tsv /zap/wrk/zap-rules.tsv
-                            {{extra.TrimEnd('\n')}}
+                            {{extra}}
                             rc=0
-                            {{script}} -c zap-rules.tsv -r "zap-$DAST_ENV.html" -J "zap-$DAST_ENV.json" -I || rc=$?
-                            cp /zap/wrk/zap-* reports/ 2>/dev/null || true
+                            {{script}} -c zap-rules.tsv -r "{{reportPrefix}}-$DAST_ENV.html" -J "{{reportPrefix}}-$DAST_ENV.json" -I || rc=$?
+                            cp /zap/wrk/{{reportPrefix}}-* reports/ 2>/dev/null || true
                             exit $rc
                         '''
                     }
                 }
             }
             """);
-        w.Line().Line("return this");
-        return w.ToString();
+        w.Line();
+    }
+
+    /// <summary>Starts the just-built image next to ZAP, runs a passive baseline scan, tears it down.</summary>
+    private static void EphemeralScan(CodeWriter w, GenerationContext ctx)
+    {
+        var e = ctx.Config.Security.Dast.Ephemeral;
+        var m = ctx.EphemeralModule!;
+        var zap = ctx.Image("zap");
+        w.Line("// Ephemeral DAST: the image built in this run, on the agent, without a shared environment.");
+        if (!ctx.IsKubernetes)
+        {
+            var envFlags = string.Concat(e.AppEnvironment.Select(v => $" -e '{v}'"));
+            w.Lines($$"""
+                def ephemeralScan(common) {
+                    withEnv([{{Quote("APP_PORT=" + e.ContainerPort)}}, {{Quote("APP_HEALTH=" + e.HealthPath)}}]) {
+                        common.withCiEnv {
+                            sh '''
+                                NET="pfscan-${BUILD_NUMBER}-$$"
+                                cleanup() { docker rm -f "$NET-app" >/dev/null 2>&1 || true; docker network rm "$NET" >/dev/null 2>&1 || true; }
+                                trap cleanup EXIT
+                                docker load -i "$CI_CACHE/images/{{m.Name}}.tar" >/dev/null
+                                docker network create --internal "$NET" >/dev/null
+                                docker run -d --name "$NET-app" --network "$NET" --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges{{envFlags}} "$REGISTRY/{{m.ImageName}}:$IMAGE_TAG" >/dev/null
+                                ready=0
+                                for i in $(seq 1 60); do
+                                    if docker run --rm --network "$NET" {{ctx.Image("curl")}} -fsS -o /dev/null "http://$NET-app:$APP_PORT$APP_HEALTH"; then ready=1; break; fi
+                                    sleep 2
+                                done
+                                if [ "$ready" != 1 ]; then echo "The app did not become healthy on $APP_HEALTH"; docker logs --tail 50 "$NET-app"; exit 1; fi
+                                mkdir -p reports/zap-ephemeral
+                                chmod 0777 reports/zap-ephemeral
+                                cp security/zap-rules.tsv reports/zap-ephemeral/zap-rules.tsv
+                                docker run --rm --network "$NET" -v "$WORKSPACE/reports/zap-ephemeral:/zap/wrk:rw" {{zap}} zap-baseline.py -t "http://$NET-app:$APP_PORT" -c zap-rules.tsv -r zap-ephemeral.html -J zap-ephemeral.json -I
+                            '''
+                        }
+                    }
+                }
+                """);
+            w.Line();
+            return;
+        }
+
+        var regCred = ctx.Config.Registry?.CredentialId ?? "registry-credentials";
+        var appEnv = string.Join(", ", e.AppEnvironment.Select(v =>
+        {
+            var i = v.IndexOf('=');
+            return $"[name: {Quote(v[..i])}, value: {Quote(v[(i + 1)..])}]";
+        }));
+        var pullSecret = e.ImagePullSecret is null ? "" : $", imagePullSecrets: [[name: {Quote(e.ImagePullSecret)}]]";
+        var cloud = ctx.Config.Agent.KubernetesCloud is { } cl ? $"cloud: {Quote(cl)}, " : "";
+        w.Lines($$"""
+            def ephemeralScan(common) {
+                // The cluster pulls the image, so a scan tag is pushed first; it is never deployed.
+                withCredentials([usernamePassword(credentialsId: {{Quote(regCred)}}, usernameVariable: 'REGISTRY_USER', passwordVariable: 'REGISTRY_PASSWORD')]) {
+                    common.inTool('crane') {
+                        sh '''
+                            set +x
+                            trap 'rm -f "$HOME/.docker/config.json"' EXIT
+                            printf '%s' "$REGISTRY_PASSWORD" | crane auth login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin
+                            crane push "$CI_CACHE/images/{{m.Name}}.tar" "$REGISTRY/{{m.ImageName}}:$IMAGE_TAG-scan"
+                        '''
+                    }
+                }
+                def image = common.safe("${env.REGISTRY}/{{m.ImageName}}:${env.IMAGE_TAG}-scan", '^[A-Za-z0-9.:/_-]+$', 'image')
+                def rules = readFile('security/zap-rules.tsv')
+                def pod = [
+                    apiVersion: 'v1',
+                    kind: 'Pod',
+                    spec: [
+                        automountServiceAccountToken: false,
+                        securityContext: [seccompProfile: [type: 'RuntimeDefault']],
+                        containers: [
+                            [name: 'app', image: image, env: [{{appEnv}}],
+                             securityContext: [allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: [drop: ['ALL']]],
+                             volumeMounts: [[name: 'tmp', mountPath: '/tmp']]],
+                            [name: 'zap', image: {{Quote(zap)}}, command: ['cat'], tty: true,
+                             securityContext: [allowPrivilegeEscalation: false]],
+                        ],
+                        volumes: [[name: 'tmp', emptyDir: [:]]]{{pullSecret}},
+                    ],
+                ]
+                withEnv([{{Quote("APP_PORT=" + e.ContainerPort)}}, {{Quote("APP_HEALTH=" + e.HealthPath)}}]) {
+                    podTemplate({{cloud}}yaml: writeYaml(data: pod, returnText: true)) {
+                        node(POD_LABEL) {
+                            try {
+                                container('zap') {
+                                    writeFile file: 'zap-rules.tsv', text: rules
+                                    sh '''
+                                        ready=0
+                                        for i in $(seq 1 60); do
+                                            if python3 -c 'import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=5)' "http://localhost:$APP_PORT$APP_HEALTH" 2>/dev/null; then ready=1; break; fi
+                                            sleep 2
+                                        done
+                                        if [ "$ready" != 1 ]; then echo "The app did not become healthy on $APP_HEALTH"; exit 1; fi
+                                        mkdir -p /zap/wrk reports
+                                        cp zap-rules.tsv /zap/wrk/zap-rules.tsv
+                                        rc=0
+                                        zap-baseline.py -t "http://localhost:$APP_PORT" -c zap-rules.tsv -r zap-ephemeral.html -J zap-ephemeral.json -I || rc=$?
+                                        cp /zap/wrk/zap-ephemeral.* reports/ 2>/dev/null || true
+                                        exit $rc
+                                    '''
+                                }
+                            } finally {
+                                stash name: 'zap-ephemeral', includes: 'reports/**', allowEmpty: true
+                            }
+                        }
+                    }
+                }
+                unstash 'zap-ephemeral'
+            }
+            """);
+        w.Line();
+    }
+
+    /// <summary>Two-role scan: access-control/session probe plus a ZAP Automation Framework plan.</summary>
+    private static void AuthenticatedScan(CodeWriter w, GenerationContext ctx)
+    {
+        var a = ctx.Config.Security.Dast.Authenticated;
+        w.Lines($$"""
+            // Logs in as zap-user and zap-admin. Fails when the user role reaches admin-only paths,
+            // when logout does not end the session, or when ZAP finds high-risk issues.
+            def authenticatedScan(common, Map cfg) {
+                withCredentials([
+                    usernamePassword(credentialsId: {{Quote(a.UserCredentialId)}}, usernameVariable: 'ZAP_USER_NAME', passwordVariable: 'ZAP_USER_PASSWORD'),
+                    usernamePassword(credentialsId: {{Quote(a.AdminCredentialId)}}, usernameVariable: 'ZAP_ADMIN_NAME', passwordVariable: 'ZAP_ADMIN_PASSWORD'),
+                ]) {
+                    withEnv([{{TargetEnv}}, {{LoginEnv(a.Login)}}, {{Quote("PROTECTED_PATH=" + a.ProtectedPath)}}]) {
+                        def failures = []
+                        common.inTool('python') {
+                            if (sh(returnStatus: true, script: 'python3 jenkins/scripts/access_control_check.py') != 0) {
+                                failures << 'access control'
+                            }
+                        }
+                        common.inTool('zap') {
+                            def rc = sh(returnStatus: true, script: '''
+                                mkdir -p /zap/wrk reports
+                                cp security/zap/auth-plan.yaml /zap/wrk/auth-plan.yaml
+                                rc=0
+                                zap.sh -cmd -autorun /zap/wrk/auth-plan.yaml || rc=$?
+                                cp /zap/wrk/zap-auth-* reports/ 2>/dev/null || true
+                                exit $rc
+                            ''')
+                            if (rc != 0) {
+                                failures << 'ZAP authenticated scan'
+                            }
+                        }
+                        if (failures) {
+                            error("Authenticated DAST failed: ${failures.join(', ')}. See reports/access-control-*.json and reports/zap-auth-*.")
+                        }
+                    }
+                }
+            }
+            """);
+        w.Line();
+    }
+
+    /// <summary>Repeated failed logins must be throttled or locked out.</summary>
+    private static void RateLimitCheck(CodeWriter w, GenerationContext ctx)
+    {
+        var r = ctx.Config.RateLimit;
+        var settings = string.Join(", ", new[]
+        {
+            Quote("TEST_USERNAME=" + r.TestUsername),
+            Quote("ATTEMPTS=" + r.Attempts),
+            Quote("EXPECTED_STATUSES=" + string.Join(",", r.ExpectedStatuses)),
+        });
+        w.Lines($$"""
+            def rateLimitCheck(common, Map cfg) {
+                withEnv([{{TargetEnv}}, {{LoginEnv(r.Login)}}, {{settings}}]) {
+                    common.inTool('python') {
+                        sh 'python3 jenkins/scripts/rate_limit_check.py'
+                    }
+                }
+            }
+            """);
+        w.Line();
     }
 
     private static bool ConfigValidatorIsUrl(string? v) => Validation.ConfigValidator.IsHttpUrl(v);

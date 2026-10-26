@@ -87,7 +87,7 @@ public static partial class JenkinsfileImporter
             }
 
             var isSonar = Has(text, @"withSonarQubeEnv|sonar-scanner|sonar:sonar|sonarscanner|\bsonar\b");
-            var isSecurity = Has(text, @"gitleaks|trufflehog|dependency-check|trivy|osv-scanner|\bsnyk\b|npm audit|cyclonedx|checkov|tfsec|zap-");
+            var isSecurity = Has(text, @"gitleaks|trufflehog|dependency-check|trivy|osv-scanner|\bsnyk\b|npm audit|cyclonedx|checkov|tfsec|zap-|cosign|enforcer|jiraNewIssue");
             var isDeploy = Has(text, @"helm\s+upgrade|kubectl\s+apply|az\s+webapp|docker[ -]compose|\bssh\b");
             if (!isSonar && !isSecurity && !isDeploy)
             {
@@ -126,7 +126,7 @@ public static partial class JenkinsfileImporter
             Scanner(DependencyScanner.OwaspDependencyCheck, "dependency-check");
             Scanner(DependencyScanner.TrivyFs, @"trivy\s+(fs|filesystem|repo)");
             Scanner(DependencyScanner.OsvScanner, "osv-scanner");
-            Scanner(DependencyScanner.Snyk, @"\bsnyk\b");
+            Scanner(DependencyScanner.Snyk, @"\bsnyk\s+test\b");
             Scanner(DependencyScanner.NpmAudit, @"npm\s+audit");
             if (Has(text, @"cyclonedx|sbom")) { config.Security.Sbom = true; mapped.Add("SBOM"); }
             if (Has(text, @"trivy\s+image|grype")) { config.Security.ContainerScan = true; mapped.Add("container scan"); }
@@ -138,6 +138,12 @@ public static partial class JenkinsfileImporter
                 mapped.Add("DAST");
             }
             if (Has(text, @"docker\s+build|kaniko|buildah|docker\.build")) mapped.Add("image build");
+            if (Has(text, @"snyk\s+container\s+(test|monitor)")) { config.Security.ContainerScan = true; config.Security.ContainerScanner = ScannerTool.Snyk; mapped.Add("container scan (Snyk)"); }
+            if (Has(text, @"snyk\s+iac")) { config.Security.IacScan = true; config.Security.IacScanner = ScannerTool.Snyk; mapped.Add("IaC scan (Snyk)"); }
+            if (Has(text, @"snyk\s+monitor")) { config.Security.SnykMonitor = true; mapped.Add("Snyk monitor"); }
+            if (Has(text, @"\bcosign\s+(sign|verify)")) { config.Signing.Enabled = true; mapped.Add("image signing (Cosign)"); }
+            if (Has(text, @"enforcer")) { config.Security.DependencyPinning = true; mapped.Add("dependency pinning (Maven Enforcer)"); }
+            if (Has(text, @"jiraNewIssue|jiraJqlSearch")) { config.Ticketing.Provider = TicketProvider.Jira; mapped.Add("Jira tickets"); }
 
             if (isDeploy)
             {
@@ -209,6 +215,8 @@ public static partial class JenkinsfileImporter
             if (target is null) { config.Security.Dast.Enabled = false; warnings.Add("DAST found but no environment URL; set one to re-enable it."); }
         }
         if (Has(body, @"disableConcurrentBuilds")) config.Options.DisableConcurrentBuilds = true;
+        if (Regex.Match(body, @"\bcron\s*\(\s*['""]([H0-9*/,\- ]{9,60})['""]") is { Success: true } cron)
+            warnings.Add($"The pipeline has a cron trigger ({cron.Groups[1].Value}). Use the scheduled scan settings to recreate it as Jenkinsfile.scheduled.");
         return new(config, stages, Gaps(config), Credentials(g.Text), warnings);
     }
 

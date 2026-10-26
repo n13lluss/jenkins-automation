@@ -29,7 +29,7 @@ public sealed record ImportRequest(string? Content, Guid? ConnectionId, string? 
 public sealed record PresetDto(Guid Id, string Name, string Description, int Version, JsonElement Config, IReadOnlyList<string> LockedPaths, DateTimeOffset UpdatedAt);
 public sealed record SavePresetRequest(string Name, string? Description, JsonElement Config, List<string>? LockedPaths);
 
-public sealed record PreviewRequest(PipelineConfig Config, Guid? PresetId, bool ApplyPreset, List<string>? Files);
+public sealed record PreviewRequest(PipelineConfig Config, Guid? PresetId, bool ApplyPreset, List<string>? Files, string? BuiltInPresetId = null);
 public sealed record GenerationResponse(
     bool Success,
     IReadOnlyList<ValidationError> Errors,
@@ -50,8 +50,8 @@ public sealed record RunDto(Guid Id, DateTimeOffset CreatedAt, string ConfigSha2
 public sealed record PullRequestCreate(string? TargetBranch, List<string>? Files);
 public sealed record PullRequestResponse(string Url, string Branch);
 public sealed record ValidateRequest(Guid JenkinsConnectionId);
-public sealed record JenkinsJobRequest(Guid JenkinsConnectionId, string JobName, string ScmCredentialId);
-public sealed record JenkinsJobResponse(string Url);
+public sealed record JenkinsJobRequest(Guid JenkinsConnectionId, string JobName, string ScmCredentialId, bool CreateScheduledJob = false);
+public sealed record JenkinsJobResponse(string Url, string? ScheduledUrl = null);
 public sealed record AiReviewRequest(Guid AiConnectionId);
 
 public sealed record AuditDto(long Id, DateTimeOffset At, Guid? UserId, string? UserEmail, string Action, string? Target, bool Success, string? Detail, string? IpAddress);
@@ -61,3 +61,5 @@ public sealed record MetaDto(
     IReadOnlyDictionary<string, string> DefaultVersions,
     IReadOnlyDictionary<string, string> ToolImages,
     IReadOnlyList<ComplianceControl> Iso27001Controls);
+
+public sealed record BuiltInPresetDto(string Id, string Name, string Description, JsonElement Config);

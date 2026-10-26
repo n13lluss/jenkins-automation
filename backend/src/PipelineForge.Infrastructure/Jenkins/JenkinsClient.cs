@@ -13,7 +13,7 @@ public sealed record JenkinsConnectionInfo(Uri BaseUrl, string Username, string 
 
 public sealed record JenkinsValidation(bool Valid, string Output);
 
-public sealed record MultibranchJob(string Name, ScmKind Scm, string Repository, string ScmCredentialId, string? ServerUrl);
+public sealed record MultibranchJob(string Name, ScmKind Scm, string Repository, string ScmCredentialId, string? ServerUrl, string ScriptPath = "Jenkinsfile");
 
 /// <summary>
 /// Jenkins REST calls authenticated with a user API token (no CSRF crumb needed).
@@ -133,7 +133,7 @@ public sealed partial class JenkinsClient(IHttpClientFactory factory, IOptions<O
                 new XElement("factory",
                     new XAttribute("class", "org.jenkinsci.plugins.workflow.multibranch.WorkflowBranchProjectFactory"),
                     new XElement("owner", new XAttribute("class", project), new XAttribute("reference", "../..")),
-                    new XElement("scriptPath", "Jenkinsfile"))));
+                    new XElement("scriptPath", job.ScriptPath is "Jenkinsfile" or "Jenkinsfile.scheduled" ? job.ScriptPath : throw new ArgumentException("Unsupported script path.")))));
         return doc.Declaration + doc.ToString();
     }
 }

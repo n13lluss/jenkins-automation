@@ -15,6 +15,8 @@ public static class ToolImages
         ["dependency-check"] = "owasp/dependency-check:12.1.8",
         ["osv-scanner"] = "ghcr.io/google/osv-scanner:v2.2.4",
         ["snyk"] = "snyk/snyk:linux",
+        ["snyk-maven"] = "snyk/snyk:maven-3-jdk-21",
+        ["cosign"] = "gcr.io/projectsigstore/cosign:v2.6.1-dev",
         ["sonar-scanner"] = "sonarsource/sonar-scanner-cli:11.5",
         ["zap"] = "ghcr.io/zaproxy/zaproxy:2.16.1",
         ["kaniko"] = "gcr.io/kaniko-project/executor:v1.24.0-debug",

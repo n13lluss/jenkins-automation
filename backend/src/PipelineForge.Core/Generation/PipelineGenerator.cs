@@ -48,7 +48,26 @@ public static class PipelineGenerator
         if (c.Quality.Enabled) Add("jenkins/stages/quality.groovy", StageScriptsWriter.Quality(ctx));
         Add("jenkins/stages/security.groovy", StageScriptsWriter.Security(ctx));
         if (ctx.ImageModules.Count > 0 || ctx.DeployEnvironments.Count > 0) Add("jenkins/stages/deploy.groovy", StageScriptsWriter.Deploy(ctx));
-        if (ctx.HasDast) Add("jenkins/stages/dast.groovy", StageScriptsWriter.Dast(ctx));
+        if (JenkinsfileWriter.HasDynamicTests(ctx)) Add("jenkins/stages/dast.groovy", StageScriptsWriter.Dast(ctx));
+        if (ctx.Scheduled) Add("Jenkinsfile.scheduled", WorkflowFilesWriter.ScheduledJenkinsfile(ctx));
+        if (ctx.Ticketing)
+        {
+            Add("jenkins/stages/tickets.groovy", WorkflowFilesWriter.Tickets(ctx));
+            Add("jenkins/scripts/collect_findings.py", WorkflowScripts.CollectFindings);
+        }
+        if (ctx.Authenticated)
+        {
+            Add("jenkins/scripts/access_control_check.py", WorkflowScripts.AccessControlCheck);
+            Add("security/zap/auth-plan.yaml", WorkflowFilesWriter.ZapAuthPlan(ctx));
+            Add("security/zap/admin-paths.txt", WorkflowFilesWriter.AdminPaths(ctx));
+        }
+        if (ctx.RateLimit) Add("jenkins/scripts/rate_limit_check.py", WorkflowScripts.RateLimitCheck);
+        if (ctx.Pinning) Add("security/maven-enforcer.xml", WorkflowFilesWriter.EnforcerSnippet);
+        if (ctx.Proxy is { } proxy && proxy.MavenPath is not null)
+        {
+            if (c.Modules.Any(m => m.Ecosystem == Ecosystem.Maven)) Add("jenkins/config/maven-settings.xml", WorkflowFilesWriter.MavenSettings(ctx));
+            if (c.Modules.Any(m => m.Ecosystem == Ecosystem.Gradle)) Add("jenkins/config/proxy.init.gradle", WorkflowFilesWriter.GradleInit);
+        }
         if (c.AiReview.Enabled)
         {
             Add("jenkins/stages/ai-review.groovy", StageScriptsWriter.AiReview(ctx));
@@ -59,7 +78,7 @@ public static class PipelineGenerator
         if (ctx.UsesTrivy) Add("security/.trivyignore", SupportFilesWriter.TrivyIgnore);
         if (c.Security.DependencyScanners.Contains(DependencyScanner.OwaspDependencyCheck))
             Add("security/dependency-check-suppressions.xml", SupportFilesWriter.DependencyCheckSuppressions);
-        if (ctx.HasDast) Add("security/zap-rules.tsv", SupportFilesWriter.ZapRules(ctx));
+        if (ctx.HasDast || ctx.Ephemeral || ctx.Scheduled) Add("security/zap-rules.tsv", SupportFilesWriter.ZapRules(ctx));
 
         var helmEnvs = ctx.DeployEnvironments.Where(e => e.Deploy.Type == DeployTargetType.Helm).ToList();
         foreach (var e in helmEnvs) Add($"deploy/helm/values-{e.Key}.yaml", SupportFilesWriter.HelmValues(ctx, e));

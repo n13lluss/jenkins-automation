@@ -10,7 +10,13 @@ public class ExportSamples
     {
         var dir = Environment.GetEnvironmentVariable("PF_SAMPLES_DIR");
         if (string.IsNullOrEmpty(dir)) return;
-        foreach (var (name, config) in new[] { ("maven-helm-k8s", Samples.MavenHelm()), ("monorepo-docker-iso", Samples.Monorepo()) })
+        foreach (var (name, config) in new[]
+                 {
+                     ("maven-helm-k8s", Samples.MavenHelm()),
+                     ("monorepo-docker-iso", Samples.Monorepo()),
+                     ("secure-java-k8s", WorkflowCoverageTests.SecureJava()),
+                     ("secure-java-docker", WorkflowCoverageTests.SecureJava(PipelineForge.Core.Model.AgentType.Docker)),
+                 })
         {
             var result = PipelineGenerator.Generate(config);
             Assert.True(result.Success);

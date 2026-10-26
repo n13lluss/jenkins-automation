@@ -29,6 +29,12 @@ public static partial class ConfigValidator
     [GeneratedRegex(@"^[A-Za-z0-9_.:-]{1,400}$")] private static partial Regex SonarKeyRx();
     [GeneratedRegex(@"^[a-z0-9_-]{1,255}$")] private static partial Regex SonarOrgRx();
     [GeneratedRegex(@"^[A-Za-z0-9._:/@-]{1,255}$")] private static partial Regex ImageRefRx();
+    [GeneratedRegex(@"^[H0-9*/,\- ]{9,60}$")] private static partial Regex CronRx();
+    [GeneratedRegex(@"^[A-Z][A-Z0-9_]{1,9}$")] private static partial Regex JiraKeyRx();
+    [GeneratedRegex(@"^[A-Za-z][A-Za-z0-9 _-]{0,39}$")] private static partial Regex IssueTypeRx();
+    [GeneratedRegex(@"^/[A-Za-z0-9._~/%-]{0,200}$")] private static partial Regex UrlPathRx();
+    [GeneratedRegex(@"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")] private static partial Regex FieldRx();
+    [GeneratedRegex(@"^[A-Z_][A-Z0-9_]{0,63}=[A-Za-z0-9._:/,@=-]{0,200}$")] private static partial Regex AppEnvRx();
 
     public const int MaxCustomStageLength = 20_000;
 
@@ -151,6 +157,8 @@ public static partial class ConfigValidator
             Check(ai.Provider != AiProvider.AzureOpenAi || ai.BaseUrl is not null, "aiReview.baseUrl", "Azure OpenAI needs the resource URL.");
         }
 
+        ValidateWorkflow(c, Check);
+
         Check(c.CustomStages.Count <= 20, "customStages", "At most 20 custom stages.");
         for (var i = 0; i < c.CustomStages.Count; i++)
         {
@@ -164,6 +172,108 @@ public static partial class ConfigValidator
         Check(c.Options.BuildsToKeep is >= 1 and <= 1000, "options.buildsToKeep", "Between 1 and 1000.");
 
         return errors;
+    }
+
+    public static bool IsUrlPath(string? v) => v is not null && UrlPathRx().IsMatch(v) && !v.Split('/').Contains("..");
+
+    private static void ValidateLogin(LoginConfig l, string p, Action<bool, string, string> check)
+    {
+        check(IsUrlPath(l.LoginPath), $"{p}.loginPath", "A path such as /login.");
+        check(IsUrlPath(l.LogoutPath), $"{p}.logoutPath", "A path such as /logout.");
+        check(FieldRx().IsMatch(l.UsernameField), $"{p}.usernameField", "Letters, digits, '_', '.' and '-' only.");
+        check(FieldRx().IsMatch(l.PasswordField), $"{p}.passwordField", "Letters, digits, '_', '.' and '-' only.");
+    }
+
+    /// <summary>Environment keys referenced by scans must exist and have a URL.</summary>
+    private static void CheckEnvironmentWithUrl(PipelineConfig c, string key, string path, Action<bool, string, string> check)
+    {
+        var env = c.Environments.FirstOrDefault(e => e.Key == key);
+        check(env is not null, path, $"Unknown environment '{key}'.");
+        check(env?.Url is not null, path, $"Environment '{key}' needs a URL.");
+    }
+
+    private static void ValidateWorkflow(PipelineConfig c, Action<bool, string, string> check)
+    {
+        var s = c.Security;
+        var hasImages = c.Modules.Any(m => m.Dockerfile is not null);
+
+        if (c.DependencyProxy is { } proxy)
+        {
+            check(IsHttpUrl(proxy.BaseUrl), "dependencyProxy.baseUrl", "Must be an http(s) URL without credentials.");
+            check(IsIdentifier(proxy.CredentialId), "dependencyProxy.credentialId", "Invalid credential ID.");
+            foreach (var (name, value) in new[] { ("mavenPath", proxy.MavenPath), ("npmPath", proxy.NpmPath), ("pypiPath", proxy.PypiPath), ("nugetPath", proxy.NugetPath), ("goPath", proxy.GoPath), ("composerPath", proxy.ComposerPath) })
+                if (value is not null) check(IsRelativePath(value), $"dependencyProxy.{name}", "A repository path such as repository/maven-public.");
+        }
+
+        if (s.DependencyPinning)
+            check(c.Modules.Any(m => m.Ecosystem == Ecosystem.Maven), "security.dependencyPinning", "Dependency pinning (Maven Enforcer) needs a Maven module.");
+        var usesSnyk = s.DependencyScanners.Contains(DependencyScanner.Snyk) || (s.ContainerScan && s.ContainerScanner == ScannerTool.Snyk)
+                       || (s.IacScan && s.IacScanner == ScannerTool.Snyk) || s.SnykMonitor;
+        if (usesSnyk) check(IsIdentifier(s.SnykCredentialId), "security.snykCredentialId", "Invalid credential ID.");
+        if (s.SnykMonitor) check(c.Environments.Any(e => e.Deploy.Type != DeployTargetType.None), "security.snykMonitor", "Snyk monitor runs on deploy: add a deploy environment.");
+
+        var g = c.Signing;
+        if (g.Enabled)
+        {
+            check(hasImages && c.Registry is not null, "signing", "Signing needs a module with a Dockerfile and a registry.");
+            check(IsIdentifier(g.KeyCredentialId), "signing.keyCredentialId", "Invalid credential ID.");
+            check(IsIdentifier(g.PasswordCredentialId), "signing.passwordCredentialId", "Invalid credential ID.");
+            check(IsRelativePath(g.PublicKeyPath), "signing.publicKeyPath", "Must be a relative path inside the repository.");
+        }
+
+        var d = s.Dast;
+        if (d.Ephemeral.Enabled)
+        {
+            var e = d.Ephemeral;
+            check(hasImages, "security.dast.ephemeral", "The ephemeral scan needs a module with a Dockerfile.");
+            if (e.Module is not null)
+                check(c.Modules.Any(m => m.Name == e.Module && m.Dockerfile is not null), "security.dast.ephemeral.module", "Pick a module that builds an image.");
+            check(e.ContainerPort is > 0 and < 65536, "security.dast.ephemeral.containerPort", "Between 1 and 65535.");
+            check(IsUrlPath(e.HealthPath), "security.dast.ephemeral.healthPath", "A path such as /actuator/health.");
+            if (e.ImagePullSecret is not null) check(IsIdentifier(e.ImagePullSecret), "security.dast.ephemeral.imagePullSecret", "Invalid secret name.");
+            check(e.AppEnvironment.Count <= 30 && e.AppEnvironment.All(v => AppEnvRx().IsMatch(v)), "security.dast.ephemeral.appEnvironment", "KEY=value pairs; letters, digits and . _ : / , @ = - in values.");
+            if (c.Agent.Type == AgentType.Kubernetes) check(c.Registry is not null, "security.dast.ephemeral", "On Kubernetes agents the scan image is pushed first: configure a registry.");
+        }
+        if (d.Authenticated.Enabled)
+        {
+            var a = d.Authenticated;
+            CheckEnvironmentWithUrl(c, a.Environment, "security.dast.authenticated.environment", check);
+            ValidateLogin(a.Login, "security.dast.authenticated.login", check);
+            check(IsIdentifier(a.UserCredentialId), "security.dast.authenticated.userCredentialId", "Invalid credential ID.");
+            check(IsIdentifier(a.AdminCredentialId), "security.dast.authenticated.adminCredentialId", "Invalid credential ID.");
+            check(IsUrlPath(a.ProtectedPath), "security.dast.authenticated.protectedPath", "A path such as /account.");
+            check(a.AdminOnlyPaths.Count is > 0 and <= 50, "security.dast.authenticated.adminOnlyPaths", "Between 1 and 50 admin-only paths.");
+            check(a.AdminOnlyPaths.All(IsUrlPath), "security.dast.authenticated.adminOnlyPaths", "Paths such as /admin/users.");
+            check(!a.BeforeProduction || c.Environments.Any(Compliance.ComplianceEnforcer.IsProduction), "security.dast.authenticated.beforeProduction", "No production environment found.");
+        }
+        if (d.Schedule.Enabled)
+        {
+            CheckEnvironmentWithUrl(c, d.Schedule.Environment, "security.dast.schedule.environment", check);
+            check(CronRx().IsMatch(d.Schedule.BaselineCron) && d.Schedule.BaselineCron.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length == 5,
+                "security.dast.schedule.baselineCron", "Five cron fields, e.g. H */6 * * *.");
+            if (d.Schedule.AuthenticatedDaily) check(d.Authenticated.Enabled, "security.dast.schedule.authenticatedDaily", "Configure the authenticated scan first.");
+        }
+
+        var r = c.RateLimit;
+        if (r.Enabled)
+        {
+            ValidateLogin(r.Login, "rateLimit.login", check);
+            check(FieldRx().IsMatch(r.TestUsername), "rateLimit.testUsername", "Letters, digits, '_', '.' and '-' only.");
+            check(r.Attempts is >= 3 and <= 200, "rateLimit.attempts", "Between 3 and 200.");
+            check(r.ExpectedStatuses.Count > 0 && r.ExpectedStatuses.All(x => x is >= 400 and < 600), "rateLimit.expectedStatuses", "HTTP error statuses, e.g. 429, 423.");
+            check(r.Environments.Count > 0, "rateLimit.environments", "Pick at least one environment.");
+            foreach (var key in r.Environments) CheckEnvironmentWithUrl(c, key, "rateLimit.environments", check);
+        }
+
+        var t = c.Ticketing;
+        if (t.Provider == TicketProvider.Jira)
+        {
+            check(IsIdentifier(t.JiraSite), "ticketing.jiraSite", "Name of the site in the Jira Steps plugin.");
+            check(JiraKeyRx().IsMatch(t.ProjectKey), "ticketing.projectKey", "A Jira project key such as SEC.");
+            check(IssueTypeRx().IsMatch(t.IssueType), "ticketing.issueType", "An issue type such as Bug.");
+            check(t.MaxPerBuild is >= 1 and <= 100, "ticketing.maxPerBuild", "Between 1 and 100.");
+            check(t.Sources.Count > 0, "ticketing.sources", "Pick at least one source.");
+        }
     }
 
     private static void ValidateDeploy(DeployTarget d, string p, Action<bool, string, string> check)

@@ -18,6 +18,27 @@ public sealed class GenerationContext
     public bool HasDependencyStage => Config.Security.DependencyScanners.Count > 0;
     public bool HasDast => Config.Security.Dast.Enabled && Config.Security.Dast.Environments.Count > 0;
     public bool IsIso => Config.Compliance.Profile == ComplianceProfile.Iso27001;
+    public bool Signing => Config.Signing.Enabled && ImageModules.Count > 0;
+    public bool Ephemeral => Config.Security.Dast.Ephemeral.Enabled && ImageModules.Count > 0;
+    public bool Authenticated => Config.Security.Dast.Authenticated.Enabled;
+    public bool Scheduled => Config.Security.Dast.Schedule.Enabled;
+    public bool Ticketing => Config.Ticketing.Provider != TicketProvider.None;
+    public bool RateLimit => Config.RateLimit.Enabled;
+    public bool Pinning => Config.Security.DependencyPinning && Config.Modules.Any(m => m.Ecosystem == Ecosystem.Maven);
+    public bool SnykMonitor => Config.Security.SnykMonitor && DeployEnvironments.Count > 0;
+    public bool UsesSnyk => Config.Security.DependencyScanners.Contains(DependencyScanner.Snyk)
+                            || (Config.Security.ContainerScan && Config.Security.ContainerScanner == ScannerTool.Snyk && ImageModules.Count > 0)
+                            || (Config.Security.IacScan && Config.Security.IacScanner == ScannerTool.Snyk);
+    public bool TicketsFrom(TicketSource s) => Ticketing && Config.Ticketing.Sources.Contains(s);
+    public DependencyProxyConfig? Proxy => Config.DependencyProxy;
+
+    /// <summary>The image scanned by the ephemeral DAST stage.</summary>
+    public ModuleConfig? EphemeralModule =>
+        ImageModules.FirstOrDefault(m => m.Name == Config.Security.Dast.Ephemeral.Module) ?? ImageModules.FirstOrDefault();
+
+    /// <summary>Environment variable carrying a module's pushed image digest between stages.</summary>
+    public static string DigestVar(ModuleConfig m) =>
+        "IMAGE_DIGEST_" + new string(m.Name.ToUpperInvariant().Select(ch => char.IsAsciiLetterOrDigit(ch) ? ch : '_').ToArray());
 
     /// <summary>Containers for the CI agent, name → image, in a stable order.</summary>
     public IReadOnlyDictionary<string, string> CiContainers { get; }
@@ -38,8 +59,9 @@ public sealed class GenerationContext
             }
             : SonarMode.Cli;
         var s = config.Security;
-        UsesTrivy = s.DependencyScanners.Contains(DependencyScanner.TrivyFs) || s.Sbom || s.LicenseCheck || s.IacScan
-                    || (s.ContainerScan && ImageModules.Count > 0);
+        UsesTrivy = s.DependencyScanners.Contains(DependencyScanner.TrivyFs) || s.Sbom || s.LicenseCheck
+                    || (s.IacScan && s.IacScanner == ScannerTool.Trivy)
+                    || (s.ContainerScan && s.ContainerScanner == ScannerTool.Trivy && ImageModules.Count > 0);
 
         var ci = new Dictionary<string, string>();
         foreach (var m in config.Modules) ci.TryAdd(ToolImages.ContainerName(m), ToolImages.EcosystemImage(m));
@@ -48,10 +70,12 @@ public sealed class GenerationContext
         if (UsesTrivy) Tool(ci, "trivy");
         if (s.DependencyScanners.Contains(DependencyScanner.OwaspDependencyCheck)) Tool(ci, "dependency-check");
         if (s.DependencyScanners.Contains(DependencyScanner.OsvScanner)) Tool(ci, "osv-scanner");
-        if (s.DependencyScanners.Contains(DependencyScanner.Snyk)) Tool(ci, "snyk");
+        if (UsesSnyk) Tool(ci, "snyk");
         if (config.Quality.Enabled && SonarMode == SonarMode.Cli) Tool(ci, "sonar-scanner");
         if (ImageModules.Count > 0 && IsKubernetes) { Tool(ci, "kaniko"); Tool(ci, "crane"); }
-        if (config.AiReview.Enabled) Tool(ci, "python");
+        if (Signing) Tool(ci, "cosign");
+        if (config.AiReview.Enabled || Ticketing) Tool(ci, "python");
+        if (TicketsFrom(TicketSource.Sonar) && config.Quality.Enabled) Tool(ci, "curl");
         CiContainers = ci;
 
         var deploy = new Dictionary<string, string>();
@@ -65,12 +89,28 @@ public sealed class GenerationContext
             }
             if (e.Url is not null) Tool(deploy, "curl");
         }
-        if (HasDast) Tool(deploy, "zap");
+        if (HasDast || Authenticated || Scheduled) Tool(deploy, "zap");
+        if (Signing && DeployEnvironments.Count > 0) Tool(deploy, "cosign");
+        if (SnykMonitor) Tool(deploy, "snyk");
+        if (RateLimit || Authenticated || Ticketing) Tool(deploy, "python");
         DeployContainers = deploy;
     }
 
-    public string Image(string tool) =>
-        Config.Agent.ImageOverrides.TryGetValue(tool, out var o) ? o : ToolImages.Tools[tool];
+    public string Image(string tool)
+    {
+        if (Config.Agent.ImageOverrides.TryGetValue(tool, out var o)) return o;
+        // Snyk needs the build tool to resolve Maven dependency trees.
+        if (tool == "snyk" && Config.Modules.Any(m => m.Ecosystem == Ecosystem.Maven)) return ToolImages.Tools["snyk-maven"];
+        return ToolImages.Tools[tool];
+    }
+
+    /// <summary>Declarative <c>when</c> condition for a stage group, or null when it always runs.</summary>
+    public string? TriggerCondition(StageTrigger trigger) => trigger switch
+    {
+        StageTrigger.PullRequests => "changeRequest()",
+        StageTrigger.DeployBranches when DeployEnvironments.Count > 0 => DeployBranchesCondition(),
+        _ => null,
+    };
 
     public IEnumerable<KeyValuePair<string, string>> AllContainers =>
         CiContainers.Concat(DeployContainers.Where(d => !CiContainers.ContainsKey(d.Key)));

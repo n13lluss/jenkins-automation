@@ -135,6 +135,20 @@ public class ApiTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Built_in_preset_is_listed_and_applied_in_preview()
+    {
+        var c = _f.As("bea");
+        var ws = await Workspace(c, "Built-in");
+        var list = await Read(await c.GetAsync("/api/presets/built-in"));
+        var id = list.EnumerateArray().Single().GetProperty("id").GetString();
+        var preview = await Read(await c.PostAsJsonAsync($"/api/workspaces/{ws}/pipelines/preview",
+            new { config = Samples.MavenHelm(), applyPreset = false, builtInPresetId = id }, Json));
+        Assert.True(preview.GetProperty("success").GetBoolean(), preview.GetProperty("errors").ToString());
+        Assert.Contains(preview.GetProperty("files").EnumerateArray(), f => f.GetProperty("path").GetString() == "Jenkinsfile.scheduled");
+        Assert.True(preview.GetProperty("effectiveConfig").GetProperty("signing").GetProperty("enabled").GetBoolean());
+    }
+
+    [Fact]
     public async Task Ssrf_targets_are_refused_for_connections()
     {
         var c = _f.As("sam");

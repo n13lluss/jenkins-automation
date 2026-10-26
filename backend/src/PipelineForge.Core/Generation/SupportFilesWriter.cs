@@ -253,7 +253,11 @@ public static class SupportFilesWriter
                   type: RuntimeDefault
               containers:
                 - name: {{ $name }}
+                  {{- if $img.digest }}
+                  image: "{{ $img.repository }}@{{ $img.digest }}"
+                  {{- else }}
                   image: "{{ $img.repository }}:{{ required "images.<name>.tag is set by the pipeline" $img.tag }}"
+                  {{- end }}
                   ports:
                     - containerPort: {{ $img.port | default 8080 }}
                   securityContext:
@@ -289,7 +293,10 @@ public static class SupportFilesWriter
         foreach (var m in ctx.ImageModules)
         {
             w.Line($"  {StageScriptsWriter.HelmKey(m.Name)}:");
-            w.Line($"    image: {Yaml($"{ctx.Config.Registry!.Host}/{m.ImageName}:${{IMAGE_TAG:?IMAGE_TAG is set by the pipeline}}")}");
+            var reference = ctx.Signing
+                ? $"{ctx.Config.Registry!.Host}/{m.ImageName}@${{{GenerationContext.DigestVar(m)}:?the signed digest is set by the pipeline}}"
+                : $"{ctx.Config.Registry!.Host}/{m.ImageName}:${{IMAGE_TAG:?IMAGE_TAG is set by the pipeline}}";
+            w.Line($"    image: {Yaml(reference)}");
             w.Line("    restart: unless-stopped");
             w.Line("    read_only: true");
             w.Line("    security_opt: [\"no-new-privileges:true\"]");
