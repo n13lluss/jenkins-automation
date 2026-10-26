@@ -131,6 +131,54 @@ public sealed class BitbucketServerProvider(IHttpClientFactory factory, IOptions
         return new PullRequestResult(href ?? "", Str(root, "id") ?? "");
     }
 
+    /// <summary>
+    /// Branch permissions (no rewrites, changes only via pull request) through branch-permissions 2.0, and
+    /// the "minimum successful builds" and "minimum approvals" merge checks through repository hooks.
+    /// </summary>
+    public async Task<IReadOnlyList<BranchRuleResult>> RequireBuildsAsync(ScmConnectionInfo conn, string repository, IReadOnlyList<string> branches, int approvals, CancellationToken ct)
+    {
+        var (project, repo) = SplitRepo(repository);
+        var results = new List<BranchRuleResult>();
+        foreach (var branch in branches)
+        {
+            var matcher = branch.Contains('*')
+                ? new { id = branch, type = new { id = "PATTERN" } }
+                : new { id = "refs/heads/" + branch, type = new { id = "BRANCH" } };
+            foreach (var type in new[] { "fast-forward-only", "pull-request-only", "no-deletes" })
+            {
+                try
+                {
+                    using var _ = await SendJsonAsync(conn, HttpMethod.Post,
+                        Combine(conn, $"rest/branch-permissions/2.0/projects/{Seg(project)}/repos/{Seg(repo)}/restrictions"),
+                        new { type, matcher, users = Array.Empty<string>(), groups = Array.Empty<string>() }, ct);
+                    results.Add(new(branch, type, true, "Applied."));
+                }
+                catch (ScmException e)
+                {
+                    results.Add(new(branch, type, false, e.Message));
+                }
+            }
+        }
+        foreach (var (hook, settings) in new (string, object)[]
+                 {
+                     ("com.atlassian.bitbucket.server.bitbucket-build:requiredBuildsMergeCheck", new { requiredCount = 1 }),
+                     ("com.atlassian.bitbucket.server.bitbucket-bundled-hooks:requiredApprovalsMergeHook", new { requiredCount = approvals }),
+                 })
+        {
+            try
+            {
+                using var _ = await SendJsonAsync(conn, HttpMethod.Put,
+                    Combine(conn, $"{Api(project, repo)}/settings/hooks/{Seg(hook)}/enabled"), settings, ct);
+                results.Add(new("(repository)", hook.Split(':')[^1], true, "Merge check enabled."));
+            }
+            catch (ScmException e)
+            {
+                results.Add(new("(repository)", hook.Split(':')[^1], false, e.Message + " Enable the merge check in the repository settings."));
+            }
+        }
+        return results;
+    }
+
     public async Task<string> WhoAmIAsync(ScmConnectionInfo conn, CancellationToken ct)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, Combine(conn, "rest/api/1.0/repos?limit=1"));

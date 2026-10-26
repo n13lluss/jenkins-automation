@@ -63,6 +63,9 @@ public static class PipelineGenerator
         }
         if (ctx.RateLimit) Add("jenkins/scripts/rate_limit_check.py", WorkflowScripts.RateLimitCheck);
         if (ctx.Pinning) Add("security/maven-enforcer.xml", WorkflowFilesWriter.EnforcerSnippet);
+        if (ctx.DockerfileLint) Add("security/.hadolint.yaml", WorkflowFilesWriter.Hadolint(ctx));
+        if (ctx.Attestations) Add("jenkins/scripts/provenance.py", WorkflowScripts.Provenance);
+        if (ctx.ClusterPolicy) Add("deploy/policies/kyverno-policies.yaml", WorkflowFilesWriter.KyvernoPolicies(ctx));
         if (ctx.Proxy is { } proxy && proxy.MavenPath is not null)
         {
             if (c.Modules.Any(m => m.Ecosystem == Ecosystem.Maven)) Add("jenkins/config/maven-settings.xml", WorkflowFilesWriter.MavenSettings(ctx));

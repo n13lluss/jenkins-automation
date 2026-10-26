@@ -314,7 +314,7 @@ export function EnvironmentsSection({ config: c, update, error, locked, readOnly
         {error("environments") && <Alert tone="danger" title={error("environments")} />}
         <div className="flex flex-col gap-3">
           {c.environments.map((env, i) => (
-            <EnvironmentCard key={i} env={env} index={i} {...{ update, error, readOnly: ro("environments") }} />
+            <EnvironmentCard key={i} env={env} index={i} earlier={c.environments.slice(0, i)} {...{ update, error, readOnly: ro("environments") }} />
           ))}
         </div>
       </Card>
@@ -367,7 +367,21 @@ export function EnvironmentsSection({ config: c, update, error, locked, readOnly
   );
 }
 
-function EnvironmentCard({ env, index: i, update, error, readOnly }: { env: EnvironmentConfig; index: number; update: SectionProps["update"]; error: SectionProps["error"]; readOnly: boolean }) {
+function EnvironmentCard({
+  env,
+  index: i,
+  earlier,
+  update,
+  error,
+  readOnly,
+}: {
+  env: EnvironmentConfig;
+  index: number;
+  earlier: EnvironmentConfig[];
+  update: SectionProps["update"];
+  error: SectionProps["error"];
+  readOnly: boolean;
+}) {
   const p = `environments[${i}]`;
   const d = env.deploy;
   const setDeploy = <K extends keyof EnvironmentConfig["deploy"]>(k: K, v: EnvironmentConfig["deploy"][K]) => update((c) => void (c.environments[i].deploy[k] = v));
@@ -394,6 +408,16 @@ function EnvironmentCard({ env, index: i, update, error, readOnly }: { env: Envi
         <Field label="Deploy target" error={error(`${p}.deploy`)}>
           <Select value={d.type} disabled={readOnly} onChange={(e) => setDeploy("type", e.target.value as DeployTargetType)} options={DEPLOY_TYPES} />
         </Field>
+        {earlier.length > 0 && d.type !== "none" && (
+          <Field label="Image source" hint="Promote reuses the exact signed image that passed the earlier environment." error={error(`${p}.promoteFrom`)}>
+            <Select
+              value={env.promoteFrom ?? ""}
+              disabled={readOnly}
+              onChange={(e) => update((c) => void (c.environments[i].promoteFrom = e.target.value || null))}
+              options={[{ value: "", label: "Build from this branch" }, ...earlier.map((e) => ({ value: e.key, label: `Promote from ${e.displayName}` }))]}
+            />
+          </Field>
+        )}
         <div className="flex items-end">
           <Toggle label="Manual approval" checked={env.requiresApproval} disabled={readOnly} onChange={(v) => update((c) => void (c.environments[i].requiresApproval = v))} />
         </div>

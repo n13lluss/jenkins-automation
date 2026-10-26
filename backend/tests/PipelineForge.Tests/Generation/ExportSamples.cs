@@ -16,6 +16,8 @@ public class ExportSamples
                      ("monorepo-docker-iso", Samples.Monorepo()),
                      ("secure-java-k8s", WorkflowCoverageTests.SecureJava()),
                      ("secure-java-docker", WorkflowCoverageTests.SecureJava(PipelineForge.Core.Model.AgentType.Docker)),
+                     ("promote-k8s", SupplyChainTests.Promoting()),
+                     ("promote-docker", SupplyChainTests.Promoting(PipelineForge.Core.Model.AgentType.Docker)),
                  })
         {
             var result = PipelineGenerator.Generate(config);

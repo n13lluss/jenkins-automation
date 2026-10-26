@@ -14,7 +14,7 @@ export type ConnectionKind = "scm" | "jenkins" | "ai";
 export type ScannerTool = "trivy" | "snyk";
 export type SecretScanScope = "history" | "diff";
 export type StageTrigger = "always" | "pullRequests" | "deployBranches";
-export type TicketSource = "secretScan" | "dependencies" | "container" | "iac" | "sonar" | "dast" | "accessControl" | "aiReview";
+export type TicketSource = "secretScan" | "dependencies" | "container" | "iac" | "sonar" | "dast" | "accessControl" | "aiReview" | "dockerfile";
 export type LoginConfig = { loginPath: string; format: "form" | "json"; usernameField: string; passwordField: string; logoutPath: string };
 export type DependencyProxy = {
   type: "nexus" | "artifactory";
@@ -62,6 +62,7 @@ export type EnvironmentConfig = {
   branchPattern: string;
   url?: string | null;
   requiresApproval: boolean;
+  promoteFrom?: string | null;
   deploy: DeployTarget;
 };
 
@@ -71,7 +72,8 @@ export type PipelineConfig = {
   modules: ModuleConfig[];
   registry?: { host: string; credentialId: string } | null;
   dependencyProxy?: DependencyProxy | null;
-  signing: { enabled: boolean; keyCredentialId: string; passwordCredentialId: string; publicKeyPath: string; transparencyLog: boolean };
+  signing: { enabled: boolean; keyCredentialId: string; passwordCredentialId: string; publicKeyPath: string; transparencyLog: boolean; attestations: boolean };
+  clusterPolicy: { enabled: boolean; disallowLatestTag: boolean; requireRunAsNonRoot: boolean };
   rateLimit: { enabled: boolean; login: LoginConfig; testUsername: string; attempts: number; expectedStatuses: number[]; environments: string[] };
   ticketing: {
     provider: "none" | "jira";
@@ -97,6 +99,8 @@ export type PipelineConfig = {
     secretScan: boolean;
     secretScanScope: SecretScanScope;
     dependencyPinning: boolean;
+    dockerfileLint: boolean;
+    allowedBaseRegistries: string[];
     dependencyScanners: DependencyScanner[];
     sbom: boolean;
     licenseCheck: boolean;

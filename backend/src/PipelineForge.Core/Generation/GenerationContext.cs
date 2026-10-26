@@ -19,6 +19,14 @@ public sealed class GenerationContext
     public bool HasDast => Config.Security.Dast.Enabled && Config.Security.Dast.Environments.Count > 0;
     public bool IsIso => Config.Compliance.Profile == ComplianceProfile.Iso27001;
     public bool Signing => Config.Signing.Enabled && ImageModules.Count > 0;
+    public bool Attestations => Signing && Config.Signing.Attestations;
+    public bool DockerfileLint => Config.Security.DockerfileLint && ImageModules.Count > 0;
+    public bool ClusterPolicy => Config.ClusterPolicy.Enabled && Signing && DeployEnvironments.Any(e => e.Deploy.Type == DeployTargetType.Helm);
+    /// <summary>Deploy environments that build their own image (no PromoteFrom).</summary>
+    public IReadOnlyList<EnvironmentConfig> BuildEnvironments => DeployEnvironments.Where(e => e.PromoteFrom is null).ToList();
+    /// <summary>Environment keys other environments promote from; their deploys tag the running digest.</summary>
+    public IReadOnlySet<string> PromotionSources => DeployEnvironments.Where(e => e.PromoteFrom is not null).Select(e => e.PromoteFrom!).ToHashSet();
+    public bool Promotion => PromotionSources.Count > 0;
     public bool Ephemeral => Config.Security.Dast.Ephemeral.Enabled && ImageModules.Count > 0;
     public bool Authenticated => Config.Security.Dast.Authenticated.Enabled;
     public bool Scheduled => Config.Security.Dast.Schedule.Enabled;
@@ -74,6 +82,8 @@ public sealed class GenerationContext
         if (config.Quality.Enabled && SonarMode == SonarMode.Cli) Tool(ci, "sonar-scanner");
         if (ImageModules.Count > 0 && IsKubernetes) { Tool(ci, "kaniko"); Tool(ci, "crane"); }
         if (Signing) Tool(ci, "cosign");
+        if (Attestations) { Tool(ci, "trivy"); Tool(ci, "python"); }
+        if (DockerfileLint) Tool(ci, "hadolint");
         if (config.AiReview.Enabled || Ticketing) Tool(ci, "python");
         if (TicketsFrom(TicketSource.Sonar) && config.Quality.Enabled) Tool(ci, "curl");
         CiContainers = ci;
@@ -92,6 +102,7 @@ public sealed class GenerationContext
         if (HasDast || Authenticated || Scheduled) Tool(deploy, "zap");
         if (Signing && DeployEnvironments.Count > 0) Tool(deploy, "cosign");
         if (SnykMonitor) Tool(deploy, "snyk");
+        if (Promotion) Tool(deploy, "crane");
         if (RateLimit || Authenticated || Ticketing) Tool(deploy, "python");
         DeployContainers = deploy;
     }
@@ -119,10 +130,12 @@ public sealed class GenerationContext
     public static string BranchCondition(string pattern) =>
         $"branch pattern: {Quote(pattern)}, comparator: 'GLOB'";
 
-    /// <summary>Condition matching any branch that deploys somewhere.</summary>
-    public string DeployBranchesCondition()
+    /// <summary>Condition matching any branch that builds and pushes an image (environments without PromoteFrom).</summary>
+    public string DeployBranchesCondition() => BranchesCondition(BuildEnvironments.Count > 0 ? BuildEnvironments : DeployEnvironments);
+
+    private static string BranchesCondition(IEnumerable<EnvironmentConfig> envs)
     {
-        var patterns = DeployEnvironments.Select(e => e.BranchPattern).Distinct().ToList();
+        var patterns = envs.Select(e => e.BranchPattern).Distinct().ToList();
         if (patterns.Count == 1) return BranchCondition(patterns[0]);
         var sb = new StringBuilder("anyOf { ");
         sb.Append(string.Join("; ", patterns.Select(BranchCondition)));

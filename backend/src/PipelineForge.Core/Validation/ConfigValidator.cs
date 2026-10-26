@@ -265,6 +265,31 @@ public static partial class ConfigValidator
             foreach (var key in r.Environments) CheckEnvironmentWithUrl(c, key, "rateLimit.environments", check);
         }
 
+        if (s.DockerfileLint)
+        {
+            check(hasImages, "security.dockerfileLint", "Dockerfile checks need a module with a Dockerfile.");
+            check(s.AllowedBaseRegistries.Count <= 20 && s.AllowedBaseRegistries.All(IsHost), "security.allowedBaseRegistries", "Registry host names such as docker.io or mcr.microsoft.com.");
+        }
+        if (g.Attestations) check(g.Enabled, "signing.attestations", "Attestations are signed with the Cosign key: enable signing.");
+        if (c.ClusterPolicy.Enabled)
+        {
+            check(c.Environments.Any(e => e.Deploy.Type == DeployTargetType.Helm), "clusterPolicy", "Cluster policies apply to Kubernetes (Helm) environments.");
+            check(g.Enabled, "clusterPolicy", "The image policy verifies Cosign signatures: enable signing.");
+        }
+
+        for (var i = 0; i < c.Environments.Count; i++)
+        {
+            var env = c.Environments[i];
+            if (env.PromoteFrom is not { } from) continue;
+            var p = $"environments[{i}].promoteFrom";
+            var source = c.Environments.FindIndex(x => x.Key == from);
+            check(source >= 0, p, $"Unknown environment '{from}'.");
+            check(source < i, p, "Promote from an environment listed before this one.");
+            check(env.Deploy.Type != DeployTargetType.None && source >= 0 && c.Environments[source].Deploy.Type != DeployTargetType.None, p,
+                "Both environments need a deploy target.");
+            check(hasImages && c.Registry is not null, p, "Promotion moves container images: add a module with a Dockerfile and a registry.");
+        }
+
         var t = c.Ticketing;
         if (t.Provider == TicketProvider.Jira)
         {

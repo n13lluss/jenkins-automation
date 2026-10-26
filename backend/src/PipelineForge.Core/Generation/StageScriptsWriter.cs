@@ -482,6 +482,28 @@ public static class StageScriptsWriter
             }));
         w.Line();
 
+        if (ctx.DockerfileLint)
+        {
+            w.Line("// Hadolint (rules in security/.hadolint.yaml) and a check that every image drops root with USER.");
+            w.Block("def dockerfileLint(common)", () => w.Block("common.inTool('hadolint')", () =>
+            {
+                w.Line("sh '''");
+                w.Indent(() =>
+                {
+                    w.Line("rc=0");
+                    foreach (var m in ctx.ImageModules)
+                    {
+                        w.Line($"hadolint --config security/.hadolint.yaml --format sarif \"{m.Dockerfile}\" > reports/hadolint-{m.Name}.sarif || rc=1");
+                        w.Line($"hadolint --config security/.hadolint.yaml \"{m.Dockerfile}\" || true");
+                        w.Line($"grep -Eiq '^[[:space:]]*USER[[:space:]]+' \"{m.Dockerfile}\" || {{ echo \"{m.Dockerfile}: no USER instruction; the container would run as root\"; rc=1; }}");
+                    }
+                    w.Line("exit $rc");
+                });
+                w.Line("'''");
+            }));
+            w.Line();
+        }
+
         if (ctx.Pinning)
         {
             w.Line("// Maven Enforcer: fails on LATEST, RELEASE, version ranges and unpinned plugins (see security/maven-enforcer.xml).");
@@ -712,6 +734,25 @@ public static class StageScriptsWriter
             var cosignCreds = $"{registryCreds}, file(credentialsId: {Quote(g.KeyCredentialId)}, variable: 'COSIGN_KEY'), string(credentialsId: {Quote(g.PasswordCredentialId)}, variable: 'COSIGN_PASSWORD')";
             w.Line("// Cosign signs the pushed digest, so what is deployed is provably what was built and scanned.");
             w.Block("def signImages(common)", () =>
+            {
+                if (ctx.Attestations)
+                {
+                    w.Line("// Attestations: the image SBOM and SLSA build provenance, signed with the same key.");
+                    w.Block("common.inTool('trivy')", () =>
+                    {
+                        w.Line("sh '''");
+                        w.Indent(() =>
+                        {
+                            w.Line("mkdir -p reports/attestations");
+                            foreach (var m in ctx.ImageModules)
+                                w.Line($"trivy image --cache-dir \"$CI_CACHE/trivy\" --input \"$CI_CACHE/images/{m.Name}.tar\" --format cyclonedx --output reports/attestations/sbom-{m.Name}.cdx.json");
+                        });
+                        w.Line("'''");
+                    });
+                    var modules = string.Join(",", ctx.ImageModules.Select(m => $"{m.Name}:{m.Dockerfile}"));
+                    w.Block($"withEnv([{Quote("PF_IMAGE_MODULES=" + modules)}, \"PF_BUILD_STARTED=${{currentBuild.startTimeInMillis}}\"])", () =>
+                        w.Block("common.inTool('python')", () => w.Line("sh 'python3 jenkins/scripts/provenance.py'")));
+                }
                 w.Block($"withCredentials([{cosignCreds}])", () =>
                     w.Block("common.inTool('cosign')", () =>
                     {
@@ -724,10 +765,19 @@ public static class StageScriptsWriter
                                 printf '%s' "$REGISTRY_PASSWORD" | cosign login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin
                                 """);
                             foreach (var m in ctx.ImageModules)
-                                w.Line($"cosign sign --yes --key \"$COSIGN_KEY\" --tlog-upload={tlog} \"$REGISTRY/{m.ImageName}@${GenerationContext.DigestVar(m)}\"");
+                            {
+                                var image = $"\"$REGISTRY/{m.ImageName}@${GenerationContext.DigestVar(m)}\"";
+                                w.Line($"cosign sign --yes --key \"$COSIGN_KEY\" --tlog-upload={tlog} {image}");
+                                if (ctx.Attestations)
+                                {
+                                    w.Line($"cosign attest --yes --key \"$COSIGN_KEY\" --tlog-upload={tlog} --type cyclonedx --predicate reports/attestations/sbom-{m.Name}.cdx.json {image}");
+                                    w.Line($"cosign attest --yes --key \"$COSIGN_KEY\" --tlog-upload={tlog} --type slsaprovenance1 --predicate reports/attestations/provenance-{m.Name}.json {image}");
+                                }
+                            }
                         });
                         w.Line("'''");
-                    })));
+                    }));
+            });
             w.Line();
             w.Line("// Runs before every deploy: refuses images that were not signed with our key.");
             w.Block("def verifyImages(common)", () =>
@@ -746,8 +796,17 @@ public static class StageScriptsWriter
                                 printf '%s' "$REGISTRY_PASSWORD" | cosign login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin
                                 set -x
                                 """);
+                            var ignoreTlog = g.TransparencyLog ? "" : " --insecure-ignore-tlog=true";
                             foreach (var m in ctx.ImageModules)
-                                w.Line($"cosign verify --key {g.PublicKeyPath}{(g.TransparencyLog ? "" : " --insecure-ignore-tlog=true")} \"$REGISTRY/{m.ImageName}@${GenerationContext.DigestVar(m)}\" > /dev/null");
+                            {
+                                var image = $"\"$REGISTRY/{m.ImageName}@${GenerationContext.DigestVar(m)}\"";
+                                w.Line($"cosign verify --key {g.PublicKeyPath}{ignoreTlog} {image} > /dev/null");
+                                if (ctx.Attestations)
+                                {
+                                    w.Line($"cosign verify-attestation --key {g.PublicKeyPath}{ignoreTlog} --type cyclonedx {image} > /dev/null");
+                                    w.Line($"cosign verify-attestation --key {g.PublicKeyPath}{ignoreTlog} --type slsaprovenance1 {image} > /dev/null");
+                                }
+                            }
                         });
                         w.Line("'''");
                     }));
@@ -776,11 +835,15 @@ public static class StageScriptsWriter
             w.Line();
         }
 
+        if (ctx.Promotion) PromotionFunctions(w, ctx, registryCreds);
+
         w.Lines("""
             def deploy(common, Map cfg) {
                 if (cfg == null) {
                     error('Environment missing from jenkins/config/environments.yaml')
                 }
+                {{PROMOTE}}
+                {{DIGESTS}}
                 {{VERIFY}}
                 switch (cfg.type) {
                     case 'helm':
@@ -798,9 +861,13 @@ public static class StageScriptsWriter
                 if (cfg.url) {
                     smokeTest(common, cfg)
                 }
+                {{TAG}}
                 {{MONITOR}}
             }
-            """.Replace("{{VERIFY}}", ctx.Signing ? "verifyImages(common)" : "// Images are not signed (signing disabled).")
+            """.Replace("{{PROMOTE}}", ctx.Promotion ? "if (cfg.promoteFrom) {\n        resolvePromoted(common, cfg)\n    }" : "")
+               .Replace("{{DIGESTS}}", string.Join("\n    ", ctx.ImageModules.Select(m => $"common.safe(env.{GenerationContext.DigestVar(m)}, '^sha256:[a-f0-9]{{64}}$', 'image digest (push or promote the image first)')")))
+               .Replace("{{TAG}}", ctx.Promotion ? $"if (cfg.key in [{string.Join(", ", ctx.PromotionSources.Order().Select(Quote))}]) {{\n        tagEnvironment(common, cfg)\n    }}" : "")
+               .Replace("{{VERIFY}}", ctx.Signing ? "verifyImages(common)" : "// Images are not signed (signing disabled).")
                .Replace("{{MONITOR}}", ctx.SnykMonitor ? "monitor(common, cfg)" : ""));
         w.Line();
 
@@ -808,7 +875,7 @@ public static class StageScriptsWriter
         if (types.Contains(DeployTargetType.Helm))
         {
             var sets = string.Join(" ", ctx.ImageModules.Select(m => $"--set-string images.{HelmKey(m.Name)}.tag=\"$IMAGE_TAG\""
-                + (ctx.Signing ? $" --set-string images.{HelmKey(m.Name)}.digest=\"${GenerationContext.DigestVar(m)}\"" : "")));
+                + $" --set-string images.{HelmKey(m.Name)}.digest=\"${GenerationContext.DigestVar(m)}\""));
             w.Lines($$"""
                 def deployHelm(common, Map cfg) {
                     def h = cfg.helm
@@ -831,7 +898,7 @@ public static class StageScriptsWriter
 
         if (types.Contains(DeployTargetType.DockerSsh))
         {
-            var digestExports = ctx.Signing ? string.Concat(ctx.ImageModules.Select(m => $" {GenerationContext.DigestVar(m)}='${GenerationContext.DigestVar(m)}'")) : "";
+            var digestExports = string.Concat(ctx.ImageModules.Select(m => $" {GenerationContext.DigestVar(m)}='${GenerationContext.DigestVar(m)}'"));
             var sshScript = """
                 HOST="${DEPLOY_HOST%%:*}"
                 PORT="${DEPLOY_HOST##*:}"
@@ -865,7 +932,7 @@ public static class StageScriptsWriter
 
         if (types.Contains(DeployTargetType.AzureAppService))
         {
-            var azureRef = ctx.Signing ? $"$REGISTRY/$DEPLOY_IMAGE@${GenerationContext.DigestVar(ctx.ImageModules[0])}" : "$REGISTRY/$DEPLOY_IMAGE:$IMAGE_TAG";
+            var azureRef = $"$REGISTRY/$DEPLOY_IMAGE@${GenerationContext.DigestVar(ctx.ImageModules[0])}";
             w.Lines(("""
                 // Prefer workload identity / managed identity where available; a service principal is used here.
                 def deployAzure(common, Map cfg) {
@@ -918,6 +985,53 @@ public static class StageScriptsWriter
     }
 
     public static string HelmKey(string moduleName) => moduleName.Replace('.', '-');
+
+    /// <summary>
+    /// Build once, promote: an environment with promoteFrom deploys the digest that is running in the
+    /// earlier environment (recorded as tag pf-env-&lt;key&gt; after each successful deploy).
+    /// </summary>
+    private static void PromotionFunctions(CodeWriter w, GenerationContext ctx, string registryCreds)
+    {
+        void Crane(Action body) => w.Block($"withCredentials([{registryCreds}])", () => w.Block("common.inTool('crane')", () =>
+        {
+            w.Line("sh '''");
+            w.Indent(() =>
+            {
+                w.Lines("""
+                    set +x
+                    trap 'rm -f "$HOME/.docker/config.json"' EXIT
+                    printf '%s' "$REGISTRY_PASSWORD" | crane auth login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin
+                    set -x
+                    """);
+                body();
+            });
+            w.Line("'''");
+        }));
+
+        w.Line("// Deploys the exact image that was tested in the earlier environment; nothing is rebuilt.");
+        w.Block("def resolvePromoted(common, Map cfg)", () =>
+        {
+            w.Line("def from = common.safe(cfg.promoteFrom, '^[a-z][a-z0-9-]*$', 'promoteFrom')");
+            w.Block("withEnv([\"PROMOTE_FROM=${from}\"])", () => Crane(() =>
+            {
+                w.Line("mkdir -p reports/image-digests");
+                foreach (var m in ctx.ImageModules)
+                    w.Line($"crane digest \"$REGISTRY/{m.ImageName}:pf-env-$PROMOTE_FROM\" > reports/image-digests/{m.Name}.txt");
+            }));
+            foreach (var m in ctx.ImageModules)
+                w.Line($"env.{GenerationContext.DigestVar(m)} = common.safe(readFile('reports/image-digests/{m.Name}.txt').trim(), '^sha256:[a-f0-9]{{64}}$', 'image digest')");
+            w.Line("echo \"Promoting the images running in ${from} to ${cfg.key}.\"");
+        });
+        w.Line();
+        w.Line("// Records which digest runs in an environment, for the next environment to promote.");
+        w.Block("def tagEnvironment(common, Map cfg)", () =>
+            w.Block("withEnv([\"DEPLOY_ENV=${common.safe(cfg.key, '^[a-z][a-z0-9-]*$', 'key')}\"])", () => Crane(() =>
+            {
+                foreach (var m in ctx.ImageModules)
+                    w.Line($"crane tag \"$REGISTRY/{m.ImageName}@${GenerationContext.DigestVar(m)}\" \"pf-env-$DEPLOY_ENV\"");
+            })));
+        w.Line();
+    }
 
     private static string Pad(int spaces) => new(' ', spaces);
 

@@ -114,6 +114,20 @@ public class ApiTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Branch_protection_needs_a_maintainer_and_a_linked_repository()
+    {
+        var c = _f.As("bea");
+        var ws = await Workspace(c, "Rules");
+        await Member(ws, "bea", "vin", "viewer");
+        var project = await Read(await c.PostAsJsonAsync($"/api/workspaces/{ws}/pipelines",
+            new { name = "orders", source = "blank", config = Samples.MavenHelm() }, Json));
+        var url = $"/api/workspaces/{ws}/pipelines/{project.GetProperty("id").GetGuid()}/branch-protection";
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await _f.As("vin").PostAsJsonAsync(url, new { approvals = 1 })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await c.PostAsJsonAsync(url, new { approvals = 1 })).StatusCode);
+    }
+
+    [Fact]
     public async Task Download_returns_a_zip_and_records_the_run()
     {
         var c = _f.As("dan");

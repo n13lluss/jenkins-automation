@@ -34,6 +34,7 @@ export function ActionsPanel({ ws, project, dirty, selected, canEdit, valid }: {
           </a>
         </Card>
         {canEdit && <PullRequestCard ws={ws} project={project} files={[...selected]} disabled={disabled} />}
+        {canEdit && project.repository && <BranchProtectionCard ws={ws} project={project} disabled={disabled} />}
         {canEdit && <JenkinsCard ws={ws} project={project} connections={jenkins} disabled={disabled} />}
         {canEdit && <AiCard ws={ws} project={project} connections={ai} disabled={disabled} />}
       </div>
@@ -98,6 +99,64 @@ function PullRequestCard({ ws, project, files, disabled }: { ws: string; project
               {result.url}
             </a>
           </Alert>
+        )}
+        {error && <Alert tone="danger" title={error} />}
+      </div>
+    </Card>
+  );
+}
+
+type BranchRuleResult = { branch: string; rule: string; ok: boolean; message: string };
+
+function BranchProtectionCard({ ws, project, disabled }: { ws: string; project: Project; disabled: boolean }) {
+  const [branches, setBranches] = useState(() => [...new Set(project.config.environments.map((e) => e.branchPattern))].join(", "));
+  const [approvals, setApprovals] = useState("1");
+  const [busy, setBusy] = useState(false);
+  const [results, setResults] = useState<BranchRuleResult[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  async function apply() {
+    setBusy(true);
+    setError(null);
+    try {
+      const list = branches.split(",").map((b) => b.trim()).filter(Boolean);
+      setResults(
+        await api<BranchRuleResult[]>(`workspaces/${ws}/pipelines/${project.id}/branch-protection`, {
+          method: "POST",
+          body: { branches: list, approvals: Number(approvals) || 0 },
+        }),
+      );
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Card title="Require the Jenkins build before merge">
+      <div className="flex flex-col gap-3">
+        <p className="text-sm text-muted">
+          Protects the deploy branches in {project.repository}: changes only through pull requests, a green Jenkins build and approvals, no force pushes. The token needs admin rights on the repository.
+        </p>
+        <Field label="Branches" hint="Comma separated; defaults to the environment branches.">
+          <Input value={branches} onChange={(e) => setBranches(e.target.value)} />
+        </Field>
+        <Field label="Required approvals">
+          <Input type="number" min={0} max={10} value={approvals} onChange={(e) => setApprovals(e.target.value)} />
+        </Field>
+        <Button onClick={apply} busy={busy} disabled={disabled}>
+          Apply branch rules
+        </Button>
+        {results && (
+          <ul className="flex flex-col gap-1 text-sm">
+            {results.map((r, i) => (
+              <li key={i} className="flex flex-wrap items-center gap-2">
+                <Badge tone={r.ok ? "ok" : "danger"}>{r.ok ? "ok" : "failed"}</Badge>
+                <code className="text-xs">{r.branch}</code>
+                <span>{r.rule}</span>
+                <span className="text-muted">{r.message}</span>
+              </li>
+            ))}
+          </ul>
         )}
         {error && <Alert tone="danger" title={error} />}
       </div>

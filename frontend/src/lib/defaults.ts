@@ -65,7 +65,8 @@ export function blankConfig(name = "app"): PipelineConfig {
     modules: [newModule(name)],
     registry: null,
     dependencyProxy: null,
-    signing: { enabled: false, keyCredentialId: "cosign-key", passwordCredentialId: "cosign-password", publicKeyPath: "security/cosign.pub", transparencyLog: false },
+    signing: { enabled: false, keyCredentialId: "cosign-key", passwordCredentialId: "cosign-password", publicKeyPath: "security/cosign.pub", transparencyLog: false, attestations: false },
+    clusterPolicy: { enabled: false, disallowLatestTag: true, requireRunAsNonRoot: true },
     rateLimit: { enabled: false, login: defaultLogin(), testUsername: "pf-ratelimit-probe", attempts: 20, expectedStatuses: [429, 423], environments: ["test"] },
     ticketing: {
       provider: "none",
@@ -91,6 +92,8 @@ export function blankConfig(name = "app"): PipelineConfig {
       secretScan: true,
       secretScanScope: "history",
       dependencyPinning: false,
+      dockerfileLint: false,
+      allowedBaseRegistries: [],
       dependencyScanners: ["trivyFs"],
       sbom: true,
       licenseCheck: false,

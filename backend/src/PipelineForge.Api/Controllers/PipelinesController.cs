@@ -192,6 +192,27 @@ public sealed class PipelinesController(
         }
     }
 
+    /// <summary>Makes the SCM require the Jenkins build (and approvals) before merging into the deploy branches.</summary>
+    [HttpPost("pipelines/{id:guid}/branch-protection")]
+    [Authorize(Policies.Maintainer)]
+    [EnableRateLimiting("expensive")]
+    public async Task<ActionResult<IReadOnlyList<BranchRuleResult>>> BranchProtection(Guid workspaceId, Guid id, BranchProtectionRequest r, CancellationToken ct)
+    {
+        var project = await Load(workspaceId, id, ct);
+        if (project.ScmConnectionId is not { } connId || project.Repository is null)
+            return BadRequest(new ProblemDetails { Title = "Link the pipeline to a repository first." });
+        if (r.Approvals is < 0 or > 10) throw new ArgumentException("Approvals must be between 0 and 10.");
+        var config = JsonSerializer.Deserialize<PipelineConfig>(project.ConfigJson, JsonDefaults.Options)!;
+        var branches = (r.Branches is { Count: > 0 } ? r.Branches : config.Environments.Select(e => e.BranchPattern).ToList())
+            .Distinct().ToList();
+        if (branches.Count > 20 || branches.Any(b => !Core.Validation.ConfigValidator.IsBranchPattern(b))) throw new ArgumentException("Invalid branch list.");
+        var (_, info) = await resolver.ScmAsync(workspaceId, connId, ct);
+        var results = await scm.Get(info.Kind).RequireBuildsAsync(info, project.Repository, branches, r.Approvals, ct);
+        await audit.WriteAsync("scm.branch_protection", workspaceId, project.Repository, results.All(x => x.Ok),
+            string.Join("; ", results.Select(x => $"{x.Branch}:{x.Rule}={(x.Ok ? "ok" : "failed")}")), ct);
+        return Ok(results);
+    }
+
     [HttpPost("pipelines/{id:guid}/validate")]
     [Authorize(Policies.Maintainer)]
     [EnableRateLimiting("expensive")]

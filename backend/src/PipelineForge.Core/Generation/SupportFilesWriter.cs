@@ -59,6 +59,7 @@ public static class SupportFilesWriter
                 w.Line($"branch: {Yaml(e.BranchPattern)}");
                 if (e.Url is not null) w.Line($"url: {Yaml(e.Url)}");
                 w.Line($"approval: {(e.RequiresApproval ? "true" : "false")}");
+                if (e.PromoteFrom is not null) w.Line($"promoteFrom: {Yaml(e.PromoteFrom)}");
                 w.Line($"type: {Yaml(TypeKey(d.Type))}");
                 switch (d.Type)
                 {
@@ -293,9 +294,7 @@ public static class SupportFilesWriter
         foreach (var m in ctx.ImageModules)
         {
             w.Line($"  {StageScriptsWriter.HelmKey(m.Name)}:");
-            var reference = ctx.Signing
-                ? $"{ctx.Config.Registry!.Host}/{m.ImageName}@${{{GenerationContext.DigestVar(m)}:?the signed digest is set by the pipeline}}"
-                : $"{ctx.Config.Registry!.Host}/{m.ImageName}:${{IMAGE_TAG:?IMAGE_TAG is set by the pipeline}}";
+            var reference = $"{ctx.Config.Registry!.Host}/{m.ImageName}@${{{GenerationContext.DigestVar(m)}:?the image digest is set by the pipeline}}";
             w.Line($"    image: {Yaml(reference)}");
             w.Line("    restart: unless-stopped");
             w.Line("    read_only: true");

@@ -63,3 +63,4 @@ public sealed record MetaDto(
     IReadOnlyList<ComplianceControl> Iso27001Controls);
 
 public sealed record BuiltInPresetDto(string Id, string Name, string Description, JsonElement Config);
+public sealed record BranchProtectionRequest(List<string>? Branches, int Approvals = 1);

@@ -111,6 +111,7 @@ public static class JenkinsfileWriter
                 if (s.Sbom) ScriptStage(w, "SBOM", "security.sbom(common)", when: checks);
                 if (s.LicenseCheck) ScriptStage(w, "License check", "security.licenseCheck(common)", when: checks);
                 if (s.IacScan) ScriptStage(w, "IaC scan", "security.iacScan(common)", when: checks);
+                if (ctx.DockerfileLint) ScriptStage(w, "Dockerfile lint", "security.dockerfileLint(common)", when: checks);
                 if (c.AiReview.Enabled)
                     ScriptStage(w, "AI security review", "aiReview.review(common)", when: c.AiReview.PullRequestsOnly ? "changeRequest()" : null);
 

@@ -15,6 +15,7 @@ public sealed class PipelineConfig
     public QualityConfig Quality { get; set; } = new();
     public SecurityConfig Security { get; set; } = new();
     public SigningConfig Signing { get; set; } = new();
+    public ClusterPolicyConfig ClusterPolicy { get; set; } = new();
     public RateLimitCheckConfig RateLimit { get; set; } = new();
     public TicketingConfig Ticketing { get; set; } = new();
     public StageTriggers Triggers { get; set; } = new();
@@ -120,6 +121,16 @@ public sealed class SigningConfig
     public string PublicKeyPath { get; set; } = "security/cosign.pub";
     /// <summary>Upload signatures to the public Rekor transparency log. Off for private images.</summary>
     public bool TransparencyLog { get; set; }
+    /// <summary>Also attach signed attestations: the image SBOM (CycloneDX) and SLSA build provenance.</summary>
+    public bool Attestations { get; set; }
+}
+
+/// <summary>Admission policies (Kyverno) so the cluster itself refuses unsigned or unsafe images.</summary>
+public sealed class ClusterPolicyConfig
+{
+    public bool Enabled { get; set; }
+    public bool DisallowLatestTag { get; set; } = true;
+    public bool RequireRunAsNonRoot { get; set; } = true;
 }
 
 public enum LoginFormat { Form, Json }
@@ -191,7 +202,7 @@ public sealed class RateLimitCheckConfig
 
 public enum TicketProvider { None, Jira }
 
-public enum TicketSource { SecretScan, Dependencies, Container, Iac, Sonar, Dast, AccessControl, AiReview }
+public enum TicketSource { SecretScan, Dependencies, Container, Iac, Sonar, Dast, AccessControl, AiReview, Dockerfile }
 
 /// <summary>Turn findings into deduplicated tickets. Snyk can also create Jira tickets natively.</summary>
 public sealed class TicketingConfig
@@ -237,6 +248,10 @@ public sealed class SecurityConfig
     public bool IacOnlyWhenChanged { get; set; }
     /// <summary>Register deployed dependencies and images with Snyk for continuous CVE monitoring.</summary>
     public bool SnykMonitor { get; set; }
+    /// <summary>Hadolint plus a USER check for every Dockerfile.</summary>
+    public bool DockerfileLint { get; set; }
+    /// <summary>Registries base images may come from (Hadolint trustedRegistries); empty allows any.</summary>
+    public List<string> AllowedBaseRegistries { get; set; } = [];
     public Severity FailOnSeverity { get; set; } = Severity.High;
     public string NvdApiKeyCredentialId { get; set; } = "nvd-api-key";
     public string SnykCredentialId { get; set; } = "snyk-token";
@@ -276,6 +291,11 @@ public sealed class EnvironmentConfig
     public string BranchPattern { get; set; } = "develop";
     public string? Url { get; set; }
     public bool RequiresApproval { get; set; }
+    /// <summary>
+    /// Build once, promote: deploy the image that is running in this earlier environment instead of
+    /// building a new one. Null means this environment's branch builds the image.
+    /// </summary>
+    public string? PromoteFrom { get; set; }
     public DeployTarget Deploy { get; set; } = new();
 }
 

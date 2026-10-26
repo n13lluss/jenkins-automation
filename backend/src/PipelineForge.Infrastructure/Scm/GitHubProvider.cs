@@ -127,6 +127,40 @@ public sealed class GitHubProvider(IHttpClientFactory factory, IOptions<Outbound
         return new PullRequestResult(Str(doc.RootElement, "html_url") ?? "", Str(doc.RootElement, "number") ?? "");
     }
 
+    /// <summary>Jenkins (GitHub Branch Source) reports this status context for PR merge builds.</summary>
+    public const string JenkinsContext = "continuous-integration/jenkins/pr-merge";
+
+    public async Task<IReadOnlyList<BranchRuleResult>> RequireBuildsAsync(ScmConnectionInfo conn, string repository, IReadOnlyList<string> branches, int approvals, CancellationToken ct)
+    {
+        var results = new List<BranchRuleResult>();
+        foreach (var branch in branches)
+        {
+            if (branch.Contains('*'))
+            {
+                results.Add(new(branch, "branch protection", false, "Wildcard branches need a GitHub ruleset; set it up in the repository settings."));
+                continue;
+            }
+            try
+            {
+                using var _ = await SendJsonAsync(conn, HttpMethod.Put, Combine(conn, $"{Repo(repository)}/branches/{PathSegs(branch)}/protection"), new
+                {
+                    required_status_checks = new { strict = true, contexts = new[] { JenkinsContext } },
+                    enforce_admins = true,
+                    required_pull_request_reviews = new { required_approving_review_count = approvals, dismiss_stale_reviews = true },
+                    restrictions = (object?)null,
+                    allow_force_pushes = false,
+                    allow_deletions = false,
+                }, ct);
+                results.Add(new(branch, "required Jenkins check + approvals + no force push", true, "Applied."));
+            }
+            catch (ScmException e)
+            {
+                results.Add(new(branch, "branch protection", false, e.Message));
+            }
+        }
+        return results;
+    }
+
     public async Task<string> WhoAmIAsync(ScmConnectionInfo conn, CancellationToken ct)
     {
         using var doc = await GetJsonAsync(conn, Combine(conn, "user"), ct);

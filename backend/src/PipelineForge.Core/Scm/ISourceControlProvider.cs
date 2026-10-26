@@ -12,6 +12,8 @@ public sealed record PullRequestRequest(string Repository, string SourceBranch, 
 
 public sealed record PullRequestResult(string Url, string Id);
 
+public sealed record BranchRuleResult(string Branch, string Rule, bool Ok, string Message);
+
 /// <summary>
 /// The connection details an SCM provider needs. The token is resolved from the secret
 /// store just before use and is never persisted with this object.
@@ -30,6 +32,11 @@ public interface ISourceControlProvider
     Task CreateBranchAsync(ScmConnectionInfo conn, string repository, string newBranch, string fromBranch, CancellationToken ct);
     Task CommitFilesAsync(ScmConnectionInfo conn, string repository, string branch, string message, IReadOnlyList<FileChange> files, CancellationToken ct);
     Task<PullRequestResult> CreatePullRequestAsync(ScmConnectionInfo conn, PullRequestRequest request, CancellationToken ct);
+    /// <summary>
+    /// Requires a passing CI build and approvals before merging into the branches, and blocks
+    /// force pushes. Best effort per rule: each result says what was applied.
+    /// </summary>
+    Task<IReadOnlyList<BranchRuleResult>> RequireBuildsAsync(ScmConnectionInfo conn, string repository, IReadOnlyList<string> branches, int approvals, CancellationToken ct);
     /// <summary>Cheap authenticated call used by "Test connection".</summary>
     Task<string> WhoAmIAsync(ScmConnectionInfo conn, CancellationToken ct);
 }

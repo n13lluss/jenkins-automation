@@ -114,6 +114,40 @@ public sealed class BitbucketCloudProvider(IHttpClientFactory factory, IOptions<
         return new PullRequestResult(Str(doc.RootElement, "links", "html", "href") ?? "", Str(doc.RootElement, "id") ?? "");
     }
 
+    public async Task<IReadOnlyList<BranchRuleResult>> RequireBuildsAsync(ScmConnectionInfo conn, string repository, IReadOnlyList<string> branches, int approvals, CancellationToken ct)
+    {
+        var (ws, slug) = SplitRepo(repository);
+        var url = Combine(conn, $"repositories/{Seg(ws)}/{Seg(slug)}/branch-restrictions");
+        var existing = new HashSet<(string Kind, string Pattern)>();
+        await foreach (var r in Pages(conn, Combine(conn, $"repositories/{Seg(ws)}/{Seg(slug)}/branch-restrictions?pagelen=100"), ct))
+            existing.Add((Str(r, "kind") ?? "", Str(r, "pattern") ?? ""));
+        var results = new List<BranchRuleResult>();
+        foreach (var branch in branches)
+        {
+            foreach (var (kind, value) in new (string, int?)[] { ("require_passing_builds_to_merge", 1), ("require_approvals_to_merge", approvals), ("force", null) })
+            {
+                if (existing.Contains((kind, branch)))
+                {
+                    results.Add(new(branch, kind, true, "Already set."));
+                    continue;
+                }
+                try
+                {
+                    object body = value is { } v
+                        ? new { kind, branch_match_kind = "glob", pattern = branch, value = v }
+                        : new { kind, branch_match_kind = "glob", pattern = branch };
+                    using var _ = await SendJsonAsync(conn, HttpMethod.Post, url, body, ct);
+                    results.Add(new(branch, kind, true, "Applied."));
+                }
+                catch (ScmException e)
+                {
+                    results.Add(new(branch, kind, false, e.Message));
+                }
+            }
+        }
+        return results;
+    }
+
     public async Task<string> WhoAmIAsync(ScmConnectionInfo conn, CancellationToken ct)
     {
         if (conn.Workspace is { Length: > 0 } ws)

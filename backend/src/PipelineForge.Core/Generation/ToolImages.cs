@@ -17,6 +17,7 @@ public static class ToolImages
         ["snyk"] = "snyk/snyk:linux",
         ["snyk-maven"] = "snyk/snyk:maven-3-jdk-21",
         ["cosign"] = "gcr.io/projectsigstore/cosign:v2.6.1-dev",
+        ["hadolint"] = "hadolint/hadolint:v2.12.0-debian",
         ["sonar-scanner"] = "sonarsource/sonar-scanner-cli:11.5",
         ["zap"] = "ghcr.io/zaproxy/zaproxy:2.16.1",
         ["kaniko"] = "gcr.io/kaniko-project/executor:v1.24.0-debug",

@@ -169,6 +169,63 @@ export function SupplyChainSection({ config: c, update, error, locked, readOnly 
                 <Input value={g.publicKeyPath} disabled={ro("signing")} onChange={(e) => update((d) => void (d.signing.publicKeyPath = e.target.value))} />
               </Field>
               <Toggle label="Upload to the public Rekor log" hint="Off for private images." checked={g.transparencyLog} disabled={ro("signing")} onChange={(v) => update((d) => void (d.signing.transparencyLog = v))} />
+              <Toggle
+                label="Attest SBOM and build provenance"
+                hint="Signed CycloneDX SBOM and SLSA v1 provenance on every image, verified before deploy."
+                checked={g.attestations}
+                disabled={ro("signing.attestations") || ro("signing")}
+                onChange={(v) => update((d) => void (d.signing.attestations = v))}
+              />
+            </Grid>
+          )}
+          {error("signing.attestations") && <Alert tone="danger" title={error("signing.attestations")} />}
+        </div>
+      </Card>
+      <Card title="Dockerfile checks">
+        <div className="flex flex-col gap-4">
+          <Toggle
+            label="Lint Dockerfiles with Hadolint"
+            hint="Fails on root users, untagged or :latest base images and untrusted registries. Every Dockerfile must also set USER."
+            checked={c.security.dockerfileLint}
+            disabled={ro("security.dockerfileLint")}
+            onChange={(v) => update((d) => void (d.security.dockerfileLint = v))}
+          />
+          {error("security.dockerfileLint") && <Alert tone="danger" title={error("security.dockerfileLint")} />}
+          {c.security.dockerfileLint && (
+            <Field label="Allowed base image registries" hint="One host per line. Empty allows any registry." error={error("security.allowedBaseRegistries")}>
+              <LinesInput
+                value={c.security.allowedBaseRegistries}
+                disabled={ro("security.dockerfileLint")}
+                onChange={(v) => update((d) => void (d.security.allowedBaseRegistries = v))}
+              />
+            </Field>
+          )}
+        </div>
+      </Card>
+      <Card title="Cluster admission policy (Kyverno)">
+        <div className="flex flex-col gap-4">
+          <Toggle
+            label="Only admit signed images in the cluster"
+            hint="Generates deploy/policies/kyverno-policies.yaml: the cluster rejects images that are unsigned or lack the attestations, even when deployed by hand."
+            checked={c.clusterPolicy.enabled}
+            disabled={ro("clusterPolicy")}
+            onChange={(v) => update((d) => void (d.clusterPolicy.enabled = v))}
+          />
+          {error("clusterPolicy") && <Alert tone="danger" title={error("clusterPolicy")} />}
+          {c.clusterPolicy.enabled && (
+            <Grid>
+              <Toggle
+                label="Reject :latest tags"
+                checked={c.clusterPolicy.disallowLatestTag}
+                disabled={ro("clusterPolicy")}
+                onChange={(v) => update((d) => void (d.clusterPolicy.disallowLatestTag = v))}
+              />
+              <Toggle
+                label="Require runAsNonRoot"
+                checked={c.clusterPolicy.requireRunAsNonRoot}
+                disabled={ro("clusterPolicy")}
+                onChange={(v) => update((d) => void (d.clusterPolicy.requireRunAsNonRoot = v))}
+              />
             </Grid>
           )}
         </div>
@@ -371,6 +428,7 @@ const SOURCES: { value: TicketSource; label: string }[] = [
   { value: "dast", label: "ZAP (DAST)" },
   { value: "accessControl", label: "Access-control check" },
   { value: "aiReview", label: "AI review" },
+  { value: "dockerfile", label: "Dockerfile lint" },
 ];
 
 export function TicketsSection({ config: c, update, error, locked, readOnly }: SectionProps) {

@@ -121,8 +121,12 @@ public static class DocsWriter
             if (s.ContainerScan) sb.AppendLine($"- **Container scan**: {s.ContainerScanner} scans the tarball before it is pushed.");
             if (ctx.Ephemeral) sb.AppendLine($"- **Ephemeral DAST**: starts the image built in this run {(ctx.IsKubernetes ? "in a short-lived pod" : "on the agent (isolated network)")}, waits for `{c.Security.Dast.Ephemeral.HealthPath}` and runs a passive ZAP baseline against it.");
             if (ctx.DeployEnvironments.Count > 0) sb.AppendLine("- **Push image**: only on deploy branches, tagged `<branch>-<build>-<commit>`; the digest is recorded in `reports/image-digests/`.");
-            if (ctx.Signing) sb.AppendLine("- **Sign image**: Cosign signs the pushed digest. Every deploy first verifies the signature with `" + c.Signing.PublicKeyPath + "` and then deploys by digest.");
+            if (ctx.Signing) sb.AppendLine("- **Sign image**: Cosign signs the pushed digest" + (ctx.Attestations ? " and attaches signed attestations (image SBOM, SLSA provenance)" : "") + ". Every deploy first verifies " + (ctx.Attestations ? "signature and attestations" : "the signature") + " with `" + c.Signing.PublicKeyPath + "`.");
+            if (ctx.DockerfileLint) sb.AppendLine("- **Dockerfile lint**: Hadolint (`security/.hadolint.yaml`) fails on root as the last user, untagged or `latest` base images" + (c.Security.AllowedBaseRegistries.Count > 0 ? ", base images outside " + string.Join(", ", c.Security.AllowedBaseRegistries) : "") + "; every Dockerfile needs a `USER`.");
         }
+        sb.AppendLine("- Every deploy uses the image digest, never a mutable tag.");
+        foreach (var e in ctx.DeployEnvironments.Where(e => e.PromoteFrom is not null))
+            sb.AppendLine($"- **Promotion**: {e.DisplayName} does not rebuild; it deploys the digest running in `{e.PromoteFrom}` (registry tag `pf-env-{e.PromoteFrom}`).");
         foreach (var e in ctx.DeployEnvironments)
             sb.AppendLine($"- **Deploy {e.DisplayName}**{(e.RequiresApproval ? " (after approval)" : "")}: {SupportFilesWriter.TypeKey(e.Deploy.Type)}{(e.Url is not null ? ", then a smoke test" : "")}{(ctx.SnykMonitor ? ", then `snyk monitor` registers what was deployed" : "")}.");
         if (ctx.RateLimit) sb.AppendLine($"- **Rate-limit check** ({string.Join(", ", c.RateLimit.Environments)}): {c.RateLimit.Attempts} failed logins as `{c.RateLimit.TestUsername}` must produce HTTP {string.Join(" or ", c.RateLimit.ExpectedStatuses)}.");
@@ -168,6 +172,13 @@ public static class DocsWriter
             sb.AppendLine("### Image signing").AppendLine();
             sb.AppendLine($"Run `cosign generate-key-pair` once. Commit `cosign.pub` as `{c.Signing.PublicKeyPath}`; store `cosign.key` and its password as the credentials above. Deploys refuse images whose signature does not verify.").AppendLine();
         }
+        if (ctx.ClusterPolicy)
+        {
+            sb.AppendLine("### Cluster admission policy").AppendLine();
+            sb.AppendLine("Install Kyverno, create the key secret (`kubectl -n kyverno create secret generic pipelineforge-cosign-pub --from-file=cosign.pub`) and apply `deploy/policies/kyverno-policies.yaml`. The cluster then refuses unsigned images in the deploy namespaces, even when someone deploys by hand.").AppendLine();
+        }
+        sb.AppendLine("### Block merges on failed checks").AppendLine();
+        sb.AppendLine("Checks only block a merge when Bitbucket or GitHub requires the Jenkins build. Use \"Require the Jenkins build before merge\" in PipelineForge, or set branch protection / merge checks by hand for " + string.Join(", ", c.Environments.Select(e => $"`{e.BranchPattern}`").Distinct()) + ".").AppendLine();
         if (ctx.Scheduled)
         {
             sb.AppendLine("### Scheduled job").AppendLine();
@@ -226,6 +237,9 @@ public static class DocsWriter
         "security/zap/auth-plan.yaml" => "ZAP Automation Framework plan for the authenticated scan",
         "security/zap/admin-paths.txt" => "Admin-only paths the user role must not reach",
         "security/maven-enforcer.xml" => "Maven Enforcer plugin snippet for pom.xml",
+        "security/.hadolint.yaml" => "Hadolint rules and trusted base registries",
+        "jenkins/scripts/provenance.py" => "SLSA build provenance for attestations",
+        "deploy/policies/kyverno-policies.yaml" => "Kyverno admission policies (signed images, no :latest, non-root)",
         "jenkins/config/maven-settings.xml" => "Maven mirror to the repository manager",
         "jenkins/config/proxy.init.gradle" => "Gradle repositories through the repository manager",
         _ when path.StartsWith("deploy/helm/values-") => "Helm values per environment",
