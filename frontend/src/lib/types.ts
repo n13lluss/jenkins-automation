@@ -66,8 +66,12 @@ export type EnvironmentConfig = {
   deploy: DeployTarget;
 };
 
+export type PipelineLayout = "inRepo" | "sharedLibrary";
+
 export type PipelineConfig = {
   name: string;
+  layout: PipelineLayout;
+  library: { name: string; repository?: string | null; defaultVersion: string };
   agent: { type: AgentType; dockerLabel: string; kubernetesCloud?: string | null; imageOverrides: Record<string, string> };
   modules: ModuleConfig[];
   registry?: { host: string; credentialId: string } | null;

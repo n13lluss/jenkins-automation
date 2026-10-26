@@ -24,6 +24,7 @@ public static class DocsWriter
         };
         plugins.Add(ctx.IsKubernetes ? "kubernetes (pod agents)" : "docker-workflow (Docker agents)");
         if (!ctx.IsKubernetes) plugins.Add("ws-cleanup");
+        if (ctx.Library) plugins.Add("pipeline-groovy-lib (shared libraries)");
         if (c.Quality.Enabled) plugins.Add("sonar (SonarQube Scanner for Jenkins)");
         if (ctx.DeployEnvironments.Any(e => e.Deploy.Type == DeployTargetType.DockerSsh)) plugins.Add("ssh-agent");
         if (ctx.DeployEnvironments.Any(e => e.Deploy.Type == DeployTargetType.AzureAppService)) plugins.Add("azure-credentials");
@@ -85,7 +86,22 @@ public static class DocsWriter
 
         sb.AppendLine("## Files").AppendLine();
         sb.AppendLine("| File | Purpose |").AppendLine("|---|---|");
-        foreach (var f in files) sb.AppendLine($"| `{f}` | {Describe(f)} |");
+        foreach (var f in files) sb.AppendLine($"| `{f}` | {Describe(ctx, f)} |");
+        sb.AppendLine();
+
+        sb.AppendLine("## Where the pipeline lives").AppendLine();
+        if (ctx.Library)
+        {
+            sb.AppendLine($"Shared library layout. The application repository only holds a thin `Jenkinsfile` that calls `{ctx.LibraryVar}()` from the library `{c.Library.Name}`. "
+                + "Everything under `library/` goes into the library repository; see `library/README.md` for the Jenkins setup. "
+                + "Each stage writes the library's copies of the scripts, environments and scan settings over the workspace, so a branch or pull request cannot change what runs.");
+        }
+        else
+        {
+            sb.AppendLine("> **Warning:** in-repository layout. The Jenkinsfile, stage scripts and `jenkins/config/environments.yaml` live in the application repository, "
+                + "so anyone who can push a branch can change what the pipeline does with its credentials. Use the shared library layout for production pipelines, "
+                + "and only build fork pull requests from trusted contributors.");
+        }
         sb.AppendLine();
 
         sb.AppendLine("## Branches and environments").AppendLine();
@@ -206,6 +222,23 @@ public static class DocsWriter
         if (ctx.Proxy is not null && c.Modules.Any(m => m.Ecosystem == Ecosystem.Go))
             sb.AppendLine("- Go: the checksum database (sum.golang.org) is still consulted; proxy it in the repository manager or set GOSUMDB accordingly.");
         return sb.ToString();
+    }
+
+    private static string Describe(GenerationContext ctx, string path)
+    {
+        if (!path.StartsWith(LibraryWriter.Prefix, StringComparison.Ordinal))
+            return path == "Jenkinsfile" && ctx.Library ? $"Thin Jenkinsfile: loads the library and calls {ctx.LibraryVar}()" : Describe(path);
+        var inner = path[LibraryWriter.Prefix.Length..];
+        var resources = $"resources/{ctx.ResourceRoot}/";
+        return inner switch
+        {
+            _ when inner == $"vars/{ctx.LibraryVar}.groovy" => "Library: the declarative pipeline",
+            _ when inner == $"vars/{ctx.LibraryVar}Scheduled.groovy" => "Library: the scheduled scan pipeline",
+            _ when inner == $"vars/{ctx.LibraryVar}Files.groovy" => "Library: writes the support files into each workspace",
+            "README.md" => "Library: repository layout and Jenkins setup",
+            _ when inner.StartsWith(resources, StringComparison.Ordinal) => "Library: " + Describe(inner[resources.Length..]),
+            _ => "Library file",
+        };
     }
 
     private static string Describe(string path) => path switch

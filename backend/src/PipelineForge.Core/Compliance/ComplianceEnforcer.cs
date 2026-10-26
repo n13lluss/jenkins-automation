@@ -16,6 +16,7 @@ public static class ComplianceEnforcer
     [
         new("A.5.37", "Documented operating procedures", "docs/PIPELINE.md describes every stage, credential and plugin."),
         new("A.8.8", "Management of technical vulnerabilities", "Dependency scanning, container image scanning and a CycloneDX SBOM on every build."),
+        new("A.8.4", "Access to source code", "The pipeline lives in a protected shared library; application branches cannot change its stages, scripts or deploy targets."),
         new("A.8.9", "Configuration management", "Infrastructure-as-code scanning; environments are versioned in jenkins/config/environments.yaml."),
         new("A.8.15", "Logging", "All scan reports are archived with fingerprints and published as SARIF."),
         new("A.8.25", "Secure development life cycle", "Quality gate enforced before anything is built into an image."),
@@ -56,6 +57,8 @@ public static class ComplianceEnforcer
         if (c.Modules.Any(m => m.Dockerfile is not null) && c.Registry is not null && c.Environments.Any(e => e.Deploy.Type != DeployTargetType.None))
             Set(c.Signing.Enabled, () => c.Signing.Enabled = true, "A.8.32: images are signed with Cosign and verified before every deploy.");
 
+        Set(c.Layout == PipelineLayout.SharedLibrary, () => c.Layout = PipelineLayout.SharedLibrary,
+            "A.8.4: the pipeline moves to a protected shared library; set the library repository.");
         Set(c.Options.DisableConcurrentBuilds, () => c.Options.DisableConcurrentBuilds = true, "A.8.32: concurrent builds disabled.");
         Set(c.Options.BuildsToKeep >= 30, () => c.Options.BuildsToKeep = 30, "A.8.15: build history kept for at least 30 builds.");
 

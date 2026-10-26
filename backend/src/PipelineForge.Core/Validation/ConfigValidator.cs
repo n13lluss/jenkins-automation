@@ -34,12 +34,15 @@ public static partial class ConfigValidator
     [GeneratedRegex(@"^[A-Za-z][A-Za-z0-9 _-]{0,39}$")] private static partial Regex IssueTypeRx();
     [GeneratedRegex(@"^/[A-Za-z0-9._~/%-]{0,200}$")] private static partial Regex UrlPathRx();
     [GeneratedRegex(@"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")] private static partial Regex FieldRx();
+    [GeneratedRegex(@"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")] private static partial Regex LibraryNameRx();
+    [GeneratedRegex(@"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")] private static partial Regex RepositoryRx();
     [GeneratedRegex(@"^[A-Z_][A-Z0-9_]{0,63}=[A-Za-z0-9._:/,@=-]{0,200}$")] private static partial Regex AppEnvRx();
 
     public const int MaxCustomStageLength = 20_000;
 
     public static bool IsIdentifier(string? v) => v is not null && IdentifierRx().IsMatch(v);
     public static bool IsName(string? v) => v is not null && NameRx().IsMatch(v);
+    public static bool IsRepository(string? v) => v is not null && RepositoryRx().IsMatch(v) && !v.Contains("..");
     public static bool IsBranchPattern(string? v) => v is not null && BranchRx().IsMatch(v) && !v.Contains("..");
     public static bool IsHost(string? v) => v is not null && HostRx().IsMatch(v);
 
@@ -67,6 +70,12 @@ public static partial class ConfigValidator
         void Check(bool ok, string path, string message) { if (!ok) errors.Add(new(path, message)); }
 
         Check(IsName(c.Name), "name", "Lowercase letters, digits, '.', '_' and '-' only (max 63).");
+        if (c.Layout == PipelineLayout.SharedLibrary)
+        {
+            Check(LibraryNameRx().IsMatch(c.Library.Name), "library.name", "Letters, digits, '.', '_' and '-' only.");
+            Check(IsBranchPattern(c.Library.DefaultVersion) && !c.Library.DefaultVersion.Contains('*'), "library.defaultVersion", "A branch or tag such as main or v1.");
+            if (c.Library.Repository is { } repo) Check(IsRepository(repo), "library.repository", "Use owner/name (Bitbucket Server: PROJECT/repo).");
+        }
 
         Check(IsIdentifier(c.Agent.DockerLabel), "agent.dockerLabel", "Invalid Jenkins label.");
         if (c.Agent.KubernetesCloud is { } cloud) Check(IsIdentifier(cloud), "agent.kubernetesCloud", "Invalid cloud name.");

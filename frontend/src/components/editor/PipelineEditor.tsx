@@ -14,7 +14,7 @@ import { DynamicTestingSection, ScannerOptionsCard, SupplyChainSection, TicketsS
 type Step = { id: string; label: string; prefixes: string[]; render: (p: SectionProps) => ReactNode };
 
 const STEPS: Step[] = [
-  { id: "project", label: "Project & modules", prefixes: ["name", "agent", "modules", "registry", "options"], render: (p) => <ProjectSection {...p} /> },
+  { id: "project", label: "Project & modules", prefixes: ["name", "layout", "library", "agent", "modules", "registry", "options"], render: (p) => <ProjectSection {...p} /> },
   { id: "supply", label: "Supply chain", prefixes: ["dependencyProxy", "signing", "security.dependencyPinning", "security.dockerfileLint", "security.allowedBaseRegistries", "clusterPolicy"], render: (p) => <SupplyChainSection {...p} /> },
   { id: "quality", label: "Code quality", prefixes: ["quality"], render: (p) => <QualitySection {...p} /> },
   {

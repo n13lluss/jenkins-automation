@@ -34,9 +34,9 @@ public sealed class GenerationService(AppDbContext db)
         return preset.LockedPaths.Count == 0 ? config : PresetMerger.EnforceLocks(config, preset.ConfigJson, preset.LockedPaths);
     }
 
-    public static GenerationResponse Generate(PipelineConfig config, LoadedPreset? preset, IReadOnlyCollection<string>? files)
+    public static GenerationResponse Generate(PipelineConfig config, LoadedPreset? preset, IReadOnlyCollection<string>? files, bool inRepoLayout = false)
     {
-        var r = PipelineGenerator.Generate(config, files);
+        var r = PipelineGenerator.Generate(config, files, inRepoLayout);
         return new GenerationResponse(r.Success, r.Errors, r.Files, r.Compliance, r.Credentials, r.Plugins, r.EffectiveConfig,
             preset?.LockedPaths ?? []);
     }

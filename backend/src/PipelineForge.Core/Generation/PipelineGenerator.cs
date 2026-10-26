@@ -24,10 +24,12 @@ public static class PipelineGenerator
 
     /// <param name="config">Not modified; compliance changes are applied to a copy.</param>
     /// <param name="onlyFiles">Return just these paths (all files when null or empty).</param>
-    public static GenerationResult Generate(PipelineConfig config, IReadOnlyCollection<string>? onlyFiles = null)
+    /// <param name="inRepoLayout">Generate the in-repository layout even for a shared library pipeline, e.g. to lint the full Jenkinsfile.</param>
+    public static GenerationResult Generate(PipelineConfig config, IReadOnlyCollection<string>? onlyFiles = null, bool inRepoLayout = false)
     {
         var c = Clone(config);
         var compliance = ComplianceEnforcer.Apply(c);
+        if (inRepoLayout) c.Layout = PipelineLayout.InRepo;
         var errors = ConfigValidator.Validate(c);
         if (errors.Count > 0) return new([], errors, compliance, [], [], c);
 
@@ -94,6 +96,7 @@ public static class PipelineGenerator
             Add($"deploy/docker/compose.{e.Key}.yml", SupportFilesWriter.Compose(ctx, e));
 
         if (ctx.IsIso) Add("docs/iso27001-evidence.md", DocsWriter.IsoEvidence(ctx));
+        if (ctx.Library) files = LibraryWriter.Split(ctx, files);
         var paths = files.Select(f => f.Path).Append("docs/PIPELINE.md").ToList();
         Add("docs/PIPELINE.md", DocsWriter.Pipeline(ctx, paths));
 

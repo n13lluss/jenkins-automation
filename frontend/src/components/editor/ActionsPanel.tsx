@@ -63,7 +63,7 @@ export function ActionsPanel({ ws, project, dirty, selected, canEdit, valid }: {
 function PullRequestCard({ ws, project, files, disabled }: { ws: string; project: Project; files: string[]; disabled: boolean }) {
   const [target, setTarget] = useState(project.branch ?? "main");
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<{ url: string } | null>(null);
+  const [result, setResult] = useState<{ url: string; libraryUrl?: string; libraryNote?: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   if (!project.repository) {
     return (
@@ -76,7 +76,7 @@ function PullRequestCard({ ws, project, files, disabled }: { ws: string; project
     setBusy(true);
     setError(null);
     try {
-      setResult(await api<{ url: string }>(`workspaces/${ws}/pipelines/${project.id}/pull-request`, { method: "POST", body: { targetBranch: target, files: files.length ? files : null } }));
+      setResult(await api<{ url: string; libraryUrl?: string; libraryNote?: string }>(`workspaces/${ws}/pipelines/${project.id}/pull-request`, { method: "POST", body: { targetBranch: target, files: files.length ? files : null } }));
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -86,20 +86,31 @@ function PullRequestCard({ ws, project, files, disabled }: { ws: string; project
   return (
     <Card title="Pull request">
       <div className="flex flex-col gap-3">
-        <p className="text-sm text-muted">Creates a branch in {project.repository} with the files and opens a pull request.</p>
+        <p className="text-sm text-muted">
+          Creates a branch in {project.repository} with the files and opens a pull request
+          {project.config.layout === "sharedLibrary" && project.config.library.repository ? `, plus one in ${project.config.library.repository} for the library files` : ""}.
+        </p>
         <Field label="Target branch">
           <Input value={target} onChange={(e) => setTarget(e.target.value)} />
         </Field>
         <Button variant="primary" onClick={open} busy={busy} disabled={disabled}>
           Open pull request
         </Button>
-        {result && (
+        {result?.url && (
           <Alert tone="ok" title="Pull request opened">
             <a className="underline" href={result.url} target="_blank" rel="noreferrer noopener">
               {result.url}
             </a>
           </Alert>
         )}
+        {result?.libraryUrl && (
+          <Alert tone="ok" title="Library pull request opened">
+            <a className="underline" href={result.libraryUrl} target="_blank" rel="noreferrer noopener">
+              {result.libraryUrl}
+            </a>
+          </Alert>
+        )}
+        {result?.libraryNote && <Alert tone="warn" title={result.libraryNote} />}
         {error && <Alert tone="danger" title={error} />}
       </div>
     </Card>

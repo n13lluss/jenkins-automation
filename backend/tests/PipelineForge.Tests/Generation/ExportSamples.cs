@@ -18,6 +18,8 @@ public class ExportSamples
                      ("secure-java-docker", WorkflowCoverageTests.SecureJava(PipelineForge.Core.Model.AgentType.Docker)),
                      ("promote-k8s", SupplyChainTests.Promoting()),
                      ("promote-docker", SupplyChainTests.Promoting(PipelineForge.Core.Model.AgentType.Docker)),
+                     ("library-k8s", SharedLibraryTests.Library()),
+                     ("library-docker", SharedLibraryTests.Library(PipelineForge.Core.Model.AgentType.Docker)),
                  })
         {
             var result = PipelineGenerator.Generate(config);

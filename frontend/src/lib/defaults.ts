@@ -61,6 +61,8 @@ export function newModule(name: string, ecosystem: Ecosystem = "maven", path = "
 export function blankConfig(name = "app"): PipelineConfig {
   return {
     name,
+    layout: "sharedLibrary",
+    library: { name: "pipelineforge", repository: null, defaultVersion: "main" },
     agent: { type: "kubernetes", dockerLabel: "docker", kubernetesCloud: null, imageOverrides: {} },
     modules: [newModule(name)],
     registry: null,

@@ -7,6 +7,9 @@ namespace PipelineForge.Core.Model;
 public sealed class PipelineConfig
 {
     public string Name { get; set; } = "app";
+    /// <summary>InRepo keeps the pipeline in the application repository; SharedLibrary moves it to a protected library.</summary>
+    public PipelineLayout Layout { get; set; } = PipelineLayout.InRepo;
+    public SharedLibraryConfig Library { get; set; } = new();
     public AgentConfig Agent { get; set; } = new();
     public List<ModuleConfig> Modules { get; set; } = [];
     public RegistryConfig? Registry { get; set; }
@@ -24,6 +27,22 @@ public sealed class PipelineConfig
     public AiReviewConfig AiReview { get; set; } = new();
     public List<CustomStage> CustomStages { get; set; } = [];
     public PipelineOptions Options { get; set; } = new();
+}
+
+public enum PipelineLayout { InRepo, SharedLibrary }
+
+/// <summary>
+/// Jenkins shared library holding the pipeline. The application repository only keeps a thin Jenkinsfile, so
+/// branches and pull requests cannot change stage logic, scripts, agent pods or deploy targets.
+/// </summary>
+public sealed class SharedLibraryConfig
+{
+    /// <summary>Library name as configured in Jenkins (folder or global library).</summary>
+    public string Name { get; set; } = "pipelineforge";
+    /// <summary>owner/name of the library repository, for the Jenkins folder library and the library pull request.</summary>
+    public string? Repository { get; set; }
+    /// <summary>Branch or tag Jenkins loads by default; overrides should be disabled in Jenkins.</summary>
+    public string DefaultVersion { get; set; } = "main";
 }
 
 public enum AgentType { Kubernetes, Docker }

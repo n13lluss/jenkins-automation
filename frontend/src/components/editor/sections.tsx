@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import { ECOSYSTEMS, defaultDeploy, newModule, slug } from "@/lib/defaults";
-import type { AiProvider, DastMode, DependencyScanner, DeployTargetType, Ecosystem, EnvironmentConfig, PipelineConfig, Severity } from "@/lib/types";
+import type { AiProvider, DastMode, DependencyScanner, DeployTargetType, Ecosystem, EnvironmentConfig, PipelineConfig, PipelineLayout, Severity } from "@/lib/types";
 import { Alert, Button, Card, Field, Input, Select, TextArea, Toggle } from "../ui";
 
 export type SectionProps = {
@@ -54,6 +54,44 @@ export function ProjectSection({ config: c, update, error, locked, readOnly }: S
             </Field>
           )}
         </Grid>
+      </Card>
+
+      <Card title="Pipeline location">
+        <div className="flex flex-col gap-3">
+          <Field label="Layout" error={error("layout")}>
+            <Select
+              value={c.layout}
+              disabled={ro("layout")}
+              onChange={(e) => update((d) => void (d.layout = e.target.value as PipelineLayout))}
+              options={[
+                { value: "sharedLibrary", label: "Protected shared library (recommended)" },
+                { value: "inRepo", label: "In the application repository" },
+              ]}
+            />
+          </Field>
+          {c.layout === "inRepo" ? (
+            <Alert tone="danger" title="Anyone who can push a branch can change this pipeline">
+              Stage scripts, agent pods and deploy targets live in the application repository, next to the code they check. Use the shared library for production pipelines.
+            </Alert>
+          ) : (
+            <>
+              <p className="text-sm text-muted">
+                The application repository only gets a thin Jenkinsfile. The pipeline, scripts and environments go to a library repository that branches cannot change.
+              </p>
+              <Grid>
+                <Field label="Library name in Jenkins" error={error("library.name")}>
+                  <Input value={c.library.name} disabled={ro("library")} onChange={(e) => update((d) => void (d.library.name = e.target.value))} />
+                </Field>
+                <Field label="Library repository" hint="owner/name on the same SCM; used for the library PR and the Jenkins job." error={error("library.repository")}>
+                  <Input value={c.library.repository ?? ""} disabled={ro("library")} onChange={(e) => update((d) => void (d.library.repository = e.target.value.trim() || null))} />
+                </Field>
+                <Field label="Default version" hint="Protected branch or tag of the library." error={error("library.defaultVersion")}>
+                  <Input value={c.library.defaultVersion} disabled={ro("library")} onChange={(e) => update((d) => void (d.library.defaultVersion = e.target.value.trim()))} />
+                </Field>
+              </Grid>
+            </>
+          )}
+        </div>
       </Card>
 
       <Card

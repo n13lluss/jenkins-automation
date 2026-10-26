@@ -30,7 +30,14 @@ public class GeneratorTests
             Assert.True(ConfigValidator.BracesBalanced(f.Content), $"{f.Path} has unbalanced braces");
             Assert.DoesNotMatch(@"(?<![A-Za-z])sh\s*""", f.Content);
             Assert.DoesNotContain("script: \"", f.Content);
-            Assert.EndsWith(f.Path == "Jenkinsfile" ? "}\n" : "return this\n", f.Content);
+            var expected = f.Path switch
+            {
+                "Jenkinsfile" when result.EffectiveConfig.Layout == PipelineForge.Core.Model.PipelineLayout.SharedLibrary => "()\n",
+                "Jenkinsfile" => "}\n",
+                _ when f.Path.StartsWith("library/vars/") => "}\n",
+                _ => "return this\n",
+            };
+            Assert.EndsWith(expected, f.Content);
         }
     }
 
@@ -51,8 +58,8 @@ public class GeneratorTests
     public void Docker_agents_get_an_image_map_and_no_pod_templates()
     {
         var result = PipelineGenerator.Generate(Samples.Monorepo());
-        Assert.DoesNotContain(result.Files, f => f.Path.StartsWith("jenkins/agents/"));
-        var common = result.Files.Single(f => f.Path == "jenkins/stages/common.groovy").Content;
+        Assert.DoesNotContain(result.Files, f => f.Path.Contains("jenkins/agents/"));
+        var common = result.Files.Single(f => f.Path.EndsWith("jenkins/stages/common.groovy")).Content;
         Assert.Contains("'gradle-21': 'eclipse-temurin:21-jdk'", common);
         Assert.Contains("docker.image(image).inside", common);
     }

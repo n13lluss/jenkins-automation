@@ -11,6 +11,11 @@ public sealed class GenerationContext
 {
     public PipelineConfig Config { get; }
     public bool IsKubernetes => Config.Agent.Type == AgentType.Kubernetes;
+    public bool Library => Config.Layout == PipelineLayout.SharedLibrary;
+    /// <summary>Global variable of the pipeline in the shared library, e.g. pfOrdersApi for "orders-api".</summary>
+    public string LibraryVar => "pf" + string.Concat(Config.Name.Split('-', '.', '_').Where(p => p.Length > 0).Select(p => char.ToUpperInvariant(p[0]) + p[1..]));
+    /// <summary>Folder under the library's resources/ holding this pipeline's support files.</summary>
+    public string ResourceRoot => $"pipelineforge/{Config.Name}";
     public IReadOnlyList<ModuleConfig> ImageModules { get; }
     public IReadOnlyList<EnvironmentConfig> DeployEnvironments { get; }
     public SonarMode SonarMode { get; }

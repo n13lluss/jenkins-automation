@@ -128,6 +128,37 @@ public class ApiTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Shared_library_layout_opens_a_pull_request_on_each_repository()
+    {
+        var c = _f.As("lia");
+        var ws = await Workspace(c, "Library");
+        var conn = await Read(await c.PostAsJsonAsync($"/api/workspaces/{ws}/connections",
+            new { kind = "scm", name = "GitHub", provider = "GitHub", baseUrl = "https://api.github.com", secret = "ghp_x" }));
+        var config = Samples.MavenHelm();
+        config.Name = "lib-orders";
+        config.Layout = PipelineForge.Core.Model.PipelineLayout.SharedLibrary;
+        config.Library.Repository = "acme/jenkins-library";
+        var project = await Read(await c.PostAsJsonAsync($"/api/workspaces/{ws}/pipelines", new
+        {
+            name = "lib-orders", source = "scan", config, scmConnectionId = conn.GetProperty("id").GetGuid(), repository = "acme/orders", branch = "develop",
+        }, Json));
+
+        var pr = await Read(await c.PostAsJsonAsync($"/api/workspaces/{ws}/pipelines/{project.GetProperty("id").GetGuid()}/pull-request", new { targetBranch = "develop" }));
+
+        Assert.Equal("https://github.com/acme/orders/pull/1", pr.GetProperty("url").GetString());
+        Assert.Equal("https://github.com/acme/jenkins-library/pull/1", pr.GetProperty("libraryUrl").GetString());
+        List<(string Repository, IReadOnlyList<PipelineForge.Core.Scm.FileChange> Files)> commits;
+        lock (_f.GitHub.Commits) commits = _f.GitHub.Commits.Where(x => x.Repository is "acme/orders" or "acme/jenkins-library").ToList();
+        var app = commits.Single(x => x.Repository == "acme/orders").Files.Select(f => f.Path).ToList();
+        var lib = commits.Single(x => x.Repository == "acme/jenkins-library").Files.Select(f => f.Path).ToList();
+        Assert.Contains("Jenkinsfile", app);
+        Assert.DoesNotContain(app, p => p.StartsWith("jenkins/") || p.StartsWith("library/"));
+        Assert.Contains("vars/pfLibOrders.groovy", lib);
+        Assert.Contains("resources/pipelineforge/lib-orders/jenkins/stages/deploy.groovy", lib);
+        lock (_f.GitHub.Branches) Assert.Contains(_f.GitHub.Branches, b => b.Repository == "acme/jenkins-library" && b.From == "main");
+    }
+
+    [Fact]
     public async Task Download_returns_a_zip_and_records_the_run()
     {
         var c = _f.As("dan");

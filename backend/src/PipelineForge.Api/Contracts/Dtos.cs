@@ -48,7 +48,7 @@ public sealed record SaveProjectRequest(string Name, string Source, PipelineConf
 public sealed record RunDto(Guid Id, DateTimeOffset CreatedAt, string ConfigSha256, string? PullRequestUrl, JsonElement Files);
 
 public sealed record PullRequestCreate(string? TargetBranch, List<string>? Files);
-public sealed record PullRequestResponse(string Url, string Branch);
+public sealed record PullRequestResponse(string Url, string Branch, string? LibraryUrl = null, string? LibraryNote = null);
 public sealed record ValidateRequest(Guid JenkinsConnectionId);
 public sealed record JenkinsJobRequest(Guid JenkinsConnectionId, string JobName, string ScmCredentialId, bool CreateScheduledJob = false);
 public sealed record JenkinsJobResponse(string Url, string? ScheduledUrl = null);
