@@ -11,6 +11,15 @@ Generates secure Jenkins pipelines. Point it at a Bitbucket (Cloud or Server/Dat
   - Dependency screening with Trivy, OWASP Dependency-Check, OSV-Scanner, Snyk and npm audit.
   - CycloneDX SBOM, license checks, IaC scanning, and container image scans before the push.
   - DAST with OWASP ZAP (baseline, full or API scan) against deployed environments.
+- **Supply chain**: Maven Enforcer pinning, a Nexus/Artifactory dependency proxy for every ecosystem, and Cosign signing with verification before each deploy.
+- **More dynamic testing**:
+  - an ephemeral ZAP scan of the just-built image
+  - an authenticated two-role scan (access control, logout, session fixation, token entropy)
+  - scheduled scans (`Jenkinsfile.scheduled`)
+  - a login rate-limit check
+- **Tickets**: deduplicated Jira issues from Gitleaks, ZAP, Sonar and scanner findings. Snyk monitor runs on deploy.
+- **Stage triggers**: checks on pull requests, packaging and deploys after a merge.
+- **Built-in preset "Secure Java (Spring Boot) workflow"**: the full workflow from `project_workflow.docx`. The step-by-step mapping is in [docs/security-checks.md](docs/security-checks.md#coverage-of-the-project-workflow-project_workflowdocx).
 - **ISO 27001 profile**: switches on the minimum controls, a production approval gate and an evidence document mapped to Annex A.
 - **AI review**:
   - An optional pipeline stage sends the redacted diff to Claude or another OpenAI-compatible or Azure OpenAI model.
@@ -29,10 +38,13 @@ jenkins/stages/security.groovy        secrets, dependencies, SBOM, licenses, IaC
 jenkins/stages/deploy.groovy          image build → scan → push, deploy per environment
 jenkins/stages/dast.groovy            ZAP against a deployed environment
 jenkins/stages/ai-review.groovy       AI review step (+ jenkins/scripts/ai_review.py)
+jenkins/stages/tickets.groovy         Jira tickets (+ jenkins/scripts/collect_findings.py)
+jenkins/scripts/*_check.py            access-control and rate-limit checks
+Jenkinsfile.scheduled                 6-hourly baseline + daily authenticated scan
 jenkins/config/environments.yaml      DTAP settings, editable without touching Groovy
 jenkins/agents/ci-pod.yaml            Kubernetes pod templates (one container per tool)
 sonar-project.properties              when the SonarScanner CLI is used
-security/…                            gitleaks, trivyignore, dependency-check suppressions, ZAP rules
+security/…                            gitleaks, trivyignore, suppressions, ZAP rules and auth plan, maven-enforcer.xml
 deploy/helm/… | deploy/docker/…       values per environment, minimal chart, compose files
 docs/PIPELINE.md                      stages, required plugins and credentials
 docs/iso27001-evidence.md             control mapping (ISO profile)

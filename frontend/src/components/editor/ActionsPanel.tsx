@@ -109,6 +109,7 @@ function JenkinsCard({ ws, project, connections, disabled }: { ws: string; proje
   const [conn, setConn] = useState("");
   const [jobName, setJobName] = useState(project.name);
   const [scmCred, setScmCred] = useState("scm-credentials");
+  const [scheduled, setScheduled] = useState(project.config.security.dast.schedule.enabled);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const connectionId = conn || connections[0]?.id || "";
@@ -136,8 +137,8 @@ function JenkinsCard({ ws, project, connections, disabled }: { ws: string; proje
   async function createJob() {
     setBusy("job");
     try {
-      const r = await api<{ url: string }>(`workspaces/${ws}/pipelines/${project.id}/jenkins-job`, { method: "POST", body: { jenkinsConnectionId: connectionId, jobName, scmCredentialId: scmCred } });
-      setMessage({ ok: true, text: `Job ready: ${r.url}` });
+      const r = await api<{ url: string; scheduledUrl?: string }>(`workspaces/${ws}/pipelines/${project.id}/jenkins-job`, { method: "POST", body: { jenkinsConnectionId: connectionId, jobName, scmCredentialId: scmCred, createScheduledJob: scheduled } });
+      setMessage({ ok: true, text: `Job ready: ${r.url}${r.scheduledUrl ? `\nScheduled scans: ${r.scheduledUrl}` : ""}` });
     } catch (e) {
       setMessage({ ok: false, text: errorMessage(e) });
     } finally {
@@ -164,6 +165,11 @@ function JenkinsCard({ ws, project, connections, disabled }: { ws: string; proje
                 <Input value={scmCred} onChange={(e) => setScmCred(e.target.value)} />
               </Field>
             </div>
+            {project.config.security.dast.schedule.enabled && (
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={scheduled} onChange={(e) => setScheduled(e.target.checked)} /> Also create the scheduled-scans job (Jenkinsfile.scheduled)
+              </label>
+            )}
             <Button onClick={createJob} busy={busy === "job"} disabled={disabled}>
               Create or update multibranch job
             </Button>

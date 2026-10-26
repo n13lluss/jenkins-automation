@@ -11,6 +11,22 @@ export type DeployTargetType = "none" | "helm" | "dockerSsh" | "azureAppService"
 export type AiProvider = "anthropic" | "openAiCompatible" | "azureOpenAi";
 export type WorkspaceRole = "viewer" | "maintainer" | "admin";
 export type ConnectionKind = "scm" | "jenkins" | "ai";
+export type ScannerTool = "trivy" | "snyk";
+export type SecretScanScope = "history" | "diff";
+export type StageTrigger = "always" | "pullRequests" | "deployBranches";
+export type TicketSource = "secretScan" | "dependencies" | "container" | "iac" | "sonar" | "dast" | "accessControl" | "aiReview";
+export type LoginConfig = { loginPath: string; format: "form" | "json"; usernameField: string; passwordField: string; logoutPath: string };
+export type DependencyProxy = {
+  type: "nexus" | "artifactory";
+  baseUrl: string;
+  credentialId: string;
+  mavenPath?: string | null;
+  npmPath?: string | null;
+  pypiPath?: string | null;
+  nugetPath?: string | null;
+  goPath?: string | null;
+  composerPath?: string | null;
+};
 
 export type ModuleConfig = {
   name: string;
@@ -54,6 +70,20 @@ export type PipelineConfig = {
   agent: { type: AgentType; dockerLabel: string; kubernetesCloud?: string | null; imageOverrides: Record<string, string> };
   modules: ModuleConfig[];
   registry?: { host: string; credentialId: string } | null;
+  dependencyProxy?: DependencyProxy | null;
+  signing: { enabled: boolean; keyCredentialId: string; passwordCredentialId: string; publicKeyPath: string; transparencyLog: boolean };
+  rateLimit: { enabled: boolean; login: LoginConfig; testUsername: string; attempts: number; expectedStatuses: number[]; environments: string[] };
+  ticketing: {
+    provider: "none" | "jira";
+    jiraSite: string;
+    projectKey: string;
+    issueType: string;
+    minSeverity: Severity;
+    maxPerBuild: number;
+    pullRequests: boolean;
+    sources: TicketSource[];
+  };
+  triggers: { checks: StageTrigger; package: StageTrigger };
   quality: {
     enabled: boolean;
     platform: QualityPlatform;
@@ -65,15 +95,38 @@ export type PipelineConfig = {
   };
   security: {
     secretScan: boolean;
+    secretScanScope: SecretScanScope;
+    dependencyPinning: boolean;
     dependencyScanners: DependencyScanner[];
     sbom: boolean;
     licenseCheck: boolean;
     containerScan: boolean;
+    containerScanner: ScannerTool;
     iacScan: boolean;
+    iacScanner: ScannerTool;
+    iacOnlyWhenChanged: boolean;
+    snykMonitor: boolean;
     failOnSeverity: Severity;
     nvdApiKeyCredentialId: string;
     snykCredentialId: string;
-    dast: { enabled: boolean; mode: DastMode; apiSpec?: string | null; environments: string[] };
+    dast: {
+      enabled: boolean;
+      mode: DastMode;
+      apiSpec?: string | null;
+      environments: string[];
+      ephemeral: { enabled: boolean; module?: string | null; containerPort: number; healthPath: string; imagePullSecret?: string | null; appEnvironment: string[] };
+      authenticated: {
+        enabled: boolean;
+        environment: string;
+        login: LoginConfig;
+        userCredentialId: string;
+        adminCredentialId: string;
+        protectedPath: string;
+        adminOnlyPaths: string[];
+        beforeProduction: boolean;
+      };
+      schedule: { enabled: boolean; environment: string; baselineCron: string; authenticatedDaily: boolean };
+    };
   };
   compliance: { profile: ComplianceProfile; approverGroup: string };
   environments: EnvironmentConfig[];
@@ -164,3 +217,4 @@ export type Project = {
 export type Run = { id: string; createdAt: string; configSha256: string; pullRequestUrl?: string; files: { path: string; sha256: string }[] };
 export type AuditEntry = { id: number; at: string; userEmail?: string; action: string; target?: string; success: boolean; detail?: string; ipAddress?: string };
 export type AiReview = { summary: string; suggestions: { severity: string; title: string; file: string; detail: string }[]; problem?: string; payloadSha256: string };
+export type BuiltInPreset = { id: string; name: string; description: string; config: Partial<PipelineConfig> };

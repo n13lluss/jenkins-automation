@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { canEdit, isAdmin, useWorkspace } from "@/components/AppShell";
 import { Alert, Badge, Button, Card, Empty, Field, Input, PageHeader, TextArea } from "@/components/ui";
 import { api, errorMessage } from "@/lib/api";
-import type { Preset } from "@/lib/types";
+import type { BuiltInPreset, Preset } from "@/lib/types";
 
 const EXAMPLE = JSON.stringify(
   {
@@ -24,13 +24,24 @@ export default function PresetsPage() {
   const { ws } = useParams<{ ws: string }>();
   const workspace = useWorkspace(ws);
   const [presets, setPresets] = useState<Preset[] | null>(null);
+  const [builtIns, setBuiltIns] = useState<BuiltInPreset[]>([]);
   const [editing, setEditing] = useState<Preset | "new" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(() => api<Preset[]>(`workspaces/${ws}/presets`).then(setPresets, (e) => setError(errorMessage(e))), [ws]);
   useEffect(() => {
     void load();
+    api<BuiltInPreset[]>("presets/built-in").then(setBuiltIns, () => setBuiltIns([]));
   }, [load]);
+
+  async function copy(b: BuiltInPreset) {
+    try {
+      await api(`workspaces/${ws}/presets`, { method: "POST", body: { name: b.name, description: b.description, config: b.config, lockedPaths: [] } });
+      await load();
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
 
   async function remove(p: Preset) {
     if (!confirm(`Delete preset “${p.name}”?`)) return;
@@ -50,6 +61,16 @@ export default function PresetsPage() {
         actions={canEdit(workspace) && <Button variant="primary" onClick={() => setEditing("new")}>New preset</Button>}
       />
       {error && <Alert tone="danger" title={error} />}
+      {builtIns.length > 0 && (
+        <div className="mb-5 grid gap-3 md:grid-cols-2">
+          {builtIns.map((b) => (
+            <Card key={b.id} title={<span>{b.name} <Badge tone="accent">built-in</Badge></span>} actions={canEdit(workspace) && <Button onClick={() => copy(b)}>Copy to workspace</Button>}>
+              <p className="text-sm text-muted">{b.description}</p>
+              <p className="mt-2 text-xs text-muted">Also selectable directly in the pipeline editor. Copy it to adjust values or add locks.</p>
+            </Card>
+          ))}
+        </div>
+      )}
       <div className="grid gap-5 lg:grid-cols-2">
         <div className="flex flex-col gap-3">
           {presets?.length === 0 && <Empty title="No presets yet">For example: “Java backend ISO standard”.</Empty>}

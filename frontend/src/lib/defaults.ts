@@ -1,4 +1,18 @@
-import type { DeployTarget, Ecosystem, EnvironmentConfig, ModuleConfig, PipelineConfig } from "./types";
+import type { DependencyProxy, DeployTarget, Ecosystem, EnvironmentConfig, LoginConfig, ModuleConfig, PipelineConfig } from "./types";
+
+export const defaultLogin = (): LoginConfig => ({ loginPath: "/login", format: "form", usernameField: "username", passwordField: "password", logoutPath: "/logout" });
+
+export const defaultProxy = (): DependencyProxy => ({
+  type: "nexus",
+  baseUrl: "https://nexus.example.com",
+  credentialId: "nexus-credentials",
+  mavenPath: "repository/maven-public",
+  npmPath: "repository/npm-proxy",
+  pypiPath: "repository/pypi-proxy/simple",
+  nugetPath: "repository/nuget-proxy/index.json",
+  goPath: "repository/go-proxy",
+  composerPath: "repository/packagist-proxy",
+});
 
 export const ECOSYSTEMS: { value: Ecosystem; label: string; version: string; versionLabel: string }[] = [
   { value: "maven", label: "Java · Maven", version: "21", versionLabel: "Java" },
@@ -50,6 +64,20 @@ export function blankConfig(name = "app"): PipelineConfig {
     agent: { type: "kubernetes", dockerLabel: "docker", kubernetesCloud: null, imageOverrides: {} },
     modules: [newModule(name)],
     registry: null,
+    dependencyProxy: null,
+    signing: { enabled: false, keyCredentialId: "cosign-key", passwordCredentialId: "cosign-password", publicKeyPath: "security/cosign.pub", transparencyLog: false },
+    rateLimit: { enabled: false, login: defaultLogin(), testUsername: "pf-ratelimit-probe", attempts: 20, expectedStatuses: [429, 423], environments: ["test"] },
+    ticketing: {
+      provider: "none",
+      jiraSite: "jira",
+      projectKey: "SEC",
+      issueType: "Bug",
+      minSeverity: "high",
+      maxPerBuild: 10,
+      pullRequests: false,
+      sources: ["secretScan", "dependencies", "container", "iac", "sonar", "dast", "accessControl"],
+    },
+    triggers: { checks: "always", package: "always" },
     quality: {
       enabled: true,
       platform: "sonarQube",
@@ -61,15 +89,38 @@ export function blankConfig(name = "app"): PipelineConfig {
     },
     security: {
       secretScan: true,
+      secretScanScope: "history",
+      dependencyPinning: false,
       dependencyScanners: ["trivyFs"],
       sbom: true,
       licenseCheck: false,
       containerScan: true,
+      containerScanner: "trivy",
       iacScan: false,
+      iacScanner: "trivy",
+      iacOnlyWhenChanged: false,
+      snykMonitor: false,
       failOnSeverity: "high",
       nvdApiKeyCredentialId: "nvd-api-key",
       snykCredentialId: "snyk-token",
-      dast: { enabled: false, mode: "baseline", apiSpec: null, environments: ["test"] },
+      dast: {
+        enabled: false,
+        mode: "baseline",
+        apiSpec: null,
+        environments: ["test"],
+        ephemeral: { enabled: false, module: null, containerPort: 8080, healthPath: "/actuator/health", imagePullSecret: null, appEnvironment: [] },
+        authenticated: {
+          enabled: false,
+          environment: "test",
+          login: defaultLogin(),
+          userCredentialId: "zap-user",
+          adminCredentialId: "zap-admin",
+          protectedPath: "/",
+          adminOnlyPaths: ["/admin"],
+          beforeProduction: false,
+        },
+        schedule: { enabled: false, environment: "test", baselineCron: "H */6 * * *", authenticatedDaily: true },
+      },
     },
     compliance: { profile: "none", approverGroup: "release-managers" },
     environments: dtap(name),
