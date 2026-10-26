@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+      - run: dotnet build backend --configuration Release
+      - run: dotnet test backend --configuration Release --no-build
+      - name: Vulnerable NuGet packages
+        run: |
+          dotnet list backend/PipelineForge.slnx package --vulnerable --include-transitive | tee vuln.txt
+          ! grep -q "has the following vulnerable packages" vuln.txt
+
+  frontend:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+      - run: npx tsc --noEmit
+      - run: npm audit --omit=dev --audit-level=high
+
+  security:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Gitleaks
+        run: |
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.28.0 git --redact --no-banner /repo
+      - name: Trivy (dependencies, IaC)
+        run: |
+          docker run --rm -v "$PWD:/repo" aquasec/trivy:0.67.2 fs --scanners vuln,misconfig --severity HIGH,CRITICAL --exit-code 1 /repo

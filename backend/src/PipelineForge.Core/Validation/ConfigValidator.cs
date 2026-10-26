@@ -1,0 +1,240 @@
+using System.Text.RegularExpressions;
+using PipelineForge.Core.Model;
+
+namespace PipelineForge.Core.Validation;
+
+public sealed record ValidationError(string Path, string Message);
+
+/// <summary>
+/// Allow-list validation for every value that ends up in a generated file.
+/// The generator refuses to render a config that does not pass.
+/// </summary>
+public static partial class ConfigValidator
+{
+    [GeneratedRegex(@"^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$")] private static partial Regex IdentifierRx();
+    [GeneratedRegex(@"^[a-z0-9][a-z0-9._-]{0,62}$")] private static partial Regex NameRx();
+    [GeneratedRegex(@"^[a-z0-9][a-z0-9._/-]{0,127}$")] private static partial Regex ImageNameRx();
+    [GeneratedRegex(@"^[a-z][a-z0-9-]{0,15}$")] private static partial Regex EnvKeyRx();
+    [GeneratedRegex(@"^[A-Za-z0-9 ._()-]{1,40}$")] private static partial Regex DisplayNameRx();
+    [GeneratedRegex(@"^[A-Za-z0-9._/*-]{1,200}$")] private static partial Regex BranchRx();
+    [GeneratedRegex(@"^[A-Za-z0-9._/-]{1,200}$")] private static partial Regex RelPathRx();
+    [GeneratedRegex(@"^/[A-Za-z0-9._/-]{0,200}$")] private static partial Regex AbsPathRx();
+    [GeneratedRegex(@"^[A-Za-z0-9]([A-Za-z0-9.-]{0,252}[A-Za-z0-9])?(:[0-9]{1,5})?$")] private static partial Regex HostRx();
+    [GeneratedRegex(@"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")] private static partial Regex K8sNameRx();
+    [GeneratedRegex(@"^[a-z_][a-z0-9_-]{0,31}$")] private static partial Regex UnixUserRx();
+    [GeneratedRegex(@"^[A-Za-z0-9._()-]{1,90}$")] private static partial Regex AzureRgRx();
+    [GeneratedRegex(@"^[A-Za-z0-9-]{1,60}$")] private static partial Regex AzureAppRx();
+    [GeneratedRegex(@"^[A-Za-z0-9._:/-]{1,100}$")] private static partial Regex ModelRx();
+    [GeneratedRegex(@"^[A-Za-z0-9._-]{1,20}$")] private static partial Regex VersionRx();
+    [GeneratedRegex(@"^[A-Za-z0-9_.:-]{1,400}$")] private static partial Regex SonarKeyRx();
+    [GeneratedRegex(@"^[a-z0-9_-]{1,255}$")] private static partial Regex SonarOrgRx();
+    [GeneratedRegex(@"^[A-Za-z0-9._:/@-]{1,255}$")] private static partial Regex ImageRefRx();
+
+    public const int MaxCustomStageLength = 20_000;
+
+    public static bool IsIdentifier(string? v) => v is not null && IdentifierRx().IsMatch(v);
+    public static bool IsName(string? v) => v is not null && NameRx().IsMatch(v);
+    public static bool IsBranchPattern(string? v) => v is not null && BranchRx().IsMatch(v) && !v.Contains("..");
+    public static bool IsHost(string? v) => v is not null && HostRx().IsMatch(v);
+
+    public static bool IsRelativePath(string? v)
+    {
+        if (v is null || !RelPathRx().IsMatch(v) || v.StartsWith('/')) return false;
+        return v.Split('/').All(seg => seg != ".." && seg.Length > 0);
+    }
+
+    public static bool IsAbsolutePath(string? v) =>
+        v is not null && AbsPathRx().IsMatch(v) && v.Split('/').All(seg => seg != "..");
+
+    public static bool IsHttpUrl(string? v)
+    {
+        if (string.IsNullOrEmpty(v) || v.Length > 2048) return false;
+        if (v.Any(c => char.IsWhiteSpace(c) || c is '\'' or '"' or '`' or '\\' or '$' or '<' or '>')) return false;
+        return Uri.TryCreate(v, UriKind.Absolute, out var uri)
+            && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp)
+            && string.IsNullOrEmpty(uri.UserInfo);
+    }
+
+    public static IReadOnlyList<ValidationError> Validate(PipelineConfig c)
+    {
+        var errors = new List<ValidationError>();
+        void Check(bool ok, string path, string message) { if (!ok) errors.Add(new(path, message)); }
+
+        Check(IsName(c.Name), "name", "Lowercase letters, digits, '.', '_' and '-' only (max 63).");
+
+        Check(IsIdentifier(c.Agent.DockerLabel), "agent.dockerLabel", "Invalid Jenkins label.");
+        if (c.Agent.KubernetesCloud is { } cloud) Check(IsIdentifier(cloud), "agent.kubernetesCloud", "Invalid cloud name.");
+        foreach (var (tool, image) in c.Agent.ImageOverrides)
+        {
+            Check(IsName(tool), $"agent.imageOverrides.{tool}", "Invalid tool name.");
+            Check(ImageRefRx().IsMatch(image), $"agent.imageOverrides.{tool}", "Invalid image reference.");
+        }
+
+        Check(c.Modules.Count is > 0 and <= 20, "modules", "Between 1 and 20 modules are required.");
+        Check(c.Modules.Select(m => m.Name).Distinct().Count() == c.Modules.Count, "modules", "Module names must be unique.");
+        for (var i = 0; i < c.Modules.Count; i++)
+        {
+            var m = c.Modules[i];
+            var p = $"modules[{i}]";
+            Check(IsName(m.Name), $"{p}.name", "Invalid module name.");
+            Check(m.Path == "." || IsRelativePath(m.Path), $"{p}.path", "Must be a relative path inside the repository.");
+            if (m.LanguageVersion is { } lv) Check(VersionRx().IsMatch(lv), $"{p}.languageVersion", "Invalid version.");
+            if (m.Dockerfile is { } df)
+            {
+                Check(IsRelativePath(df), $"{p}.dockerfile", "Must be a relative path inside the repository.");
+                Check(m.ImageName is not null && ImageNameRx().IsMatch(m.ImageName), $"{p}.imageName", "An image name is required with a Dockerfile.");
+            }
+        }
+
+        if (c.Registry is { } reg)
+        {
+            Check(IsHost(reg.Host), "registry.host", "Invalid registry host.");
+            Check(IsIdentifier(reg.CredentialId), "registry.credentialId", "Invalid credential ID.");
+        }
+        Check(c.Registry is not null || c.Modules.All(m => m.Dockerfile is null), "registry", "A registry is required when a module builds an image.");
+
+        var q = c.Quality;
+        if (q.Enabled)
+        {
+            Check(IsIdentifier(q.ServerName), "quality.serverName", "Invalid SonarQube installation name.");
+            Check(SonarKeyRx().IsMatch(q.ProjectKey), "quality.projectKey", "Invalid Sonar project key.");
+            if (q.Platform == QualityPlatform.SonarCloud)
+                Check(q.Organization is not null && SonarOrgRx().IsMatch(q.Organization), "quality.organization", "SonarCloud requires an organisation key.");
+        }
+
+        var s = c.Security;
+        Check(IsIdentifier(s.NvdApiKeyCredentialId), "security.nvdApiKeyCredentialId", "Invalid credential ID.");
+        Check(IsIdentifier(s.SnykCredentialId), "security.snykCredentialId", "Invalid credential ID.");
+        Check(s.DependencyScanners.Distinct().Count() == s.DependencyScanners.Count, "security.dependencyScanners", "Duplicate scanner.");
+        if (s.DependencyScanners.Contains(DependencyScanner.NpmAudit))
+            Check(c.Modules.Any(m => m.Ecosystem is Ecosystem.Npm or Ecosystem.Pnpm or Ecosystem.Yarn), "security.dependencyScanners", "npm audit needs a Node module.");
+
+        var envKeys = c.Environments.Select(e => e.Key).ToList();
+        Check(c.Environments.Count <= 10, "environments", "At most 10 environments.");
+        Check(envKeys.Distinct().Count() == envKeys.Count, "environments", "Environment keys must be unique.");
+        for (var i = 0; i < c.Environments.Count; i++)
+        {
+            var e = c.Environments[i];
+            var p = $"environments[{i}]";
+            Check(EnvKeyRx().IsMatch(e.Key), $"{p}.key", "Lowercase letter first, then letters, digits or '-' (max 16).");
+            Check(DisplayNameRx().IsMatch(e.DisplayName), $"{p}.displayName", "Letters, digits, spaces and . _ ( ) - only.");
+            Check(IsBranchPattern(e.BranchPattern), $"{p}.branchPattern", "Invalid branch pattern.");
+            if (e.Url is not null) Check(IsHttpUrl(e.Url), $"{p}.url", "Must be an http(s) URL without credentials.");
+            ValidateDeploy(e.Deploy, $"{p}.deploy", Check);
+            if (e.Deploy.Type != DeployTargetType.None)
+                Check(c.Registry is not null && c.Modules.Any(m => m.Dockerfile is not null),
+                    $"{p}.deploy", "Deploys ship container images: add a module with a Dockerfile and a registry.");
+        }
+
+        if (s.Dast.Enabled)
+        {
+            Check(s.Dast.Environments.Count > 0, "security.dast.environments", "Pick at least one environment to scan.");
+            foreach (var key in s.Dast.Environments)
+            {
+                var env = c.Environments.FirstOrDefault(e => e.Key == key);
+                Check(env is not null, "security.dast.environments", $"Unknown environment '{key}'.");
+                Check(env?.Url is not null, "security.dast.environments", $"Environment '{key}' needs a URL for DAST.");
+            }
+            if (s.Dast.Mode == DastMode.Api)
+                Check(s.Dast.ApiSpec is not null && (IsHttpUrl(s.Dast.ApiSpec) || IsRelativePath(s.Dast.ApiSpec)),
+                    "security.dast.apiSpec", "API scans need an OpenAPI URL or repository path.");
+        }
+
+        Check(IsIdentifier(c.Compliance.ApproverGroup), "compliance.approverGroup", "Invalid Jenkins user or group.");
+
+        var ai = c.AiReview;
+        if (ai.Enabled)
+        {
+            Check(ModelRx().IsMatch(ai.Model), "aiReview.model", "Invalid model name.");
+            Check(IsIdentifier(ai.CredentialId), "aiReview.credentialId", "Invalid credential ID.");
+            if (ai.BaseUrl is not null) Check(IsHttpUrl(ai.BaseUrl) && ai.BaseUrl.StartsWith("https://"), "aiReview.baseUrl", "Must be an https URL.");
+            Check(ai.Provider != AiProvider.AzureOpenAi || ai.BaseUrl is not null, "aiReview.baseUrl", "Azure OpenAI needs the resource URL.");
+        }
+
+        Check(c.CustomStages.Count <= 20, "customStages", "At most 20 custom stages.");
+        for (var i = 0; i < c.CustomStages.Count; i++)
+        {
+            var cs = c.CustomStages[i];
+            Check(DisplayNameRx().IsMatch(cs.Name), $"customStages[{i}].name", "Letters, digits, spaces and . _ ( ) - only.");
+            Check(cs.Steps.Length <= MaxCustomStageLength, $"customStages[{i}].steps", "Too long.");
+            Check(BracesBalanced(cs.Steps), $"customStages[{i}].steps", "Unbalanced braces or quotes; the steps must be a self-contained block.");
+        }
+
+        Check(c.Options.TimeoutMinutes is >= 5 and <= 1440, "options.timeoutMinutes", "Between 5 and 1440.");
+        Check(c.Options.BuildsToKeep is >= 1 and <= 1000, "options.buildsToKeep", "Between 1 and 1000.");
+
+        return errors;
+    }
+
+    private static void ValidateDeploy(DeployTarget d, string p, Action<bool, string, string> check)
+    {
+        switch (d.Type)
+        {
+            case DeployTargetType.Helm:
+                check(IsIdentifier(d.KubeconfigCredentialId), $"{p}.kubeconfigCredentialId", "Invalid credential ID.");
+                check(K8sNameRx().IsMatch(d.Namespace), $"{p}.namespace", "Invalid Kubernetes namespace.");
+                check(K8sNameRx().IsMatch(d.ReleaseName), $"{p}.releaseName", "Invalid Helm release name.");
+                check(IsRelativePath(d.ChartPath), $"{p}.chartPath", "Must be a relative path inside the repository.");
+                break;
+            case DeployTargetType.DockerSsh:
+                check(IsIdentifier(d.SshCredentialId), $"{p}.sshCredentialId", "Invalid credential ID.");
+                check(IsIdentifier(d.KnownHostsCredentialId), $"{p}.knownHostsCredentialId", "Invalid credential ID.");
+                check(IsHost(d.Host), $"{p}.host", "Invalid host.");
+                check(UnixUserRx().IsMatch(d.User), $"{p}.user", "Invalid user name.");
+                check(IsAbsolutePath(d.RemoteDir), $"{p}.remoteDir", "Must be an absolute path.");
+                break;
+            case DeployTargetType.AzureAppService:
+                check(IsIdentifier(d.AzureCredentialId), $"{p}.azureCredentialId", "Invalid credential ID.");
+                check(AzureRgRx().IsMatch(d.ResourceGroup), $"{p}.resourceGroup", "Invalid resource group.");
+                check(AzureAppRx().IsMatch(d.AppName), $"{p}.appName", "Invalid app name.");
+                if (d.Slot is not null) check(AzureAppRx().IsMatch(d.Slot), $"{p}.slot", "Invalid slot name.");
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Checks that braces balance outside string literals and comments, so a custom
+    /// block cannot close the surrounding stage and inject pipeline-level directives.
+    /// </summary>
+    public static bool BracesBalanced(string groovy)
+    {
+        var depth = 0;
+        var i = 0;
+        while (i < groovy.Length)
+        {
+            var c = groovy[i];
+            if (c == '/' && i + 1 < groovy.Length && groovy[i + 1] == '/')
+            {
+                while (i < groovy.Length && groovy[i] != '\n') i++;
+                continue;
+            }
+            if (c == '/' && i + 1 < groovy.Length && groovy[i + 1] == '*')
+            {
+                var end = groovy.IndexOf("*/", i + 2, StringComparison.Ordinal);
+                if (end < 0) return false;
+                i = end + 2;
+                continue;
+            }
+            if (c is '\'' or '"')
+            {
+                var triple = i + 2 < groovy.Length && groovy[i + 1] == c && groovy[i + 2] == c;
+                var delim = triple ? new string(c, 3) : c.ToString();
+                i += delim.Length;
+                var closed = false;
+                while (i < groovy.Length)
+                {
+                    if (groovy[i] == '\\') { i += 2; continue; }
+                    if (string.CompareOrdinal(groovy, i, delim, 0, delim.Length) == 0) { i += delim.Length; closed = true; break; }
+                    if (!triple && groovy[i] == '\n') return false;
+                    i++;
+                }
+                if (!closed) return false;
+                continue;
+            }
+            if (c == '{') depth++;
+            else if (c == '}' && --depth < 0) return false;
+            i++;
+        }
+        return depth == 0;
+    }
+}

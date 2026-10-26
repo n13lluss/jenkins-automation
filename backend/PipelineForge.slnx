@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/PipelineForge.Api/PipelineForge.Api.csproj" />
+    <Project Path="src/PipelineForge.Core/PipelineForge.Core.csproj" />
+    <Project Path="src/PipelineForge.Infrastructure/PipelineForge.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/PipelineForge.Tests/PipelineForge.Tests.csproj" />
+  </Folder>
+</Solution>
