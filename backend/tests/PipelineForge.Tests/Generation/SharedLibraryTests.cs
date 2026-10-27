@@ -38,9 +38,11 @@ public class SharedLibraryTests
         Assert.DoesNotContain(f.Keys, p => p.StartsWith("jenkins/", StringComparison.Ordinal));
         Assert.DoesNotContain("security/.hadolint.yaml", f.Keys);
         Assert.DoesNotContain("security/zap/auth-plan.yaml", f.Keys);
+        const string root0 = "library/resources/pipelineforge/orders-api/";
         // App-owned files stay.
         Assert.Contains("deploy/helm/values-prod.yaml", f.Keys);
-        Assert.Contains("security/.trivyignore", f.Keys);
+        Assert.Contains("security/exceptions.yaml", f.Keys);
+        Assert.Contains(root0 + "jenkins/scripts/exceptions.py", f.Keys);
 
         const string root = "library/resources/pipelineforge/orders-api/";
         Assert.Contains(root + "jenkins/stages/deploy.groovy", f.Keys);

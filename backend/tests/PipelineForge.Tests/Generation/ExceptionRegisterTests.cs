@@ -44,7 +44,7 @@ public class ExceptionRegisterTests
     [Fact]
     public void Off_by_default()
     {
-        var f = Files(WorkflowCoverageTests.SecureJava());
+        var f = Files(Samples.MavenHelm());
         Assert.DoesNotContain("security/exceptions.yaml", f.Keys);
         Assert.DoesNotContain("pf-exceptions", f["Jenkinsfile"]);
         Assert.Contains("security/.trivyignore", f.Keys);

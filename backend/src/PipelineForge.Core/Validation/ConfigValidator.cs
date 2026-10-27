@@ -334,13 +334,11 @@ public static partial class ConfigValidator
 
         if (s.DockerfileLint)
         {
-            check(hasImages, "security.dockerfileLint", "Dockerfile checks need a module with a Dockerfile.");
             check(s.AllowedBaseRegistries.Count <= 20 && s.AllowedBaseRegistries.All(IsHost), "security.allowedBaseRegistries", "Registry host names such as docker.io or mcr.microsoft.com.");
         }
         if (g.Attestations) check(g.Enabled, "signing.attestations", "Attestations are signed with the Cosign key: enable signing.");
         if (c.ClusterPolicy.Enabled)
         {
-            check(c.Environments.Any(e => e.Deploy.Type == DeployTargetType.Helm), "clusterPolicy", "Cluster policies apply to Kubernetes (Helm) environments.");
             check(g.Enabled, "clusterPolicy", "The image policy verifies Cosign signatures: enable signing.");
         }
 

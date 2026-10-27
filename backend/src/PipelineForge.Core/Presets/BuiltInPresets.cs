@@ -14,15 +14,21 @@ public static class BuiltInPresets
     public static readonly BuiltInPreset SecureJava = new(
         "builtin-secure-java",
         "Secure Java (Spring Boot) workflow",
-        "Maven Enforcer, Nexus, SonarQube gate, Snyk SCA/container/IaC/monitor, Gitleaks on the diff, Cosign, ephemeral, authenticated and scheduled ZAP, login rate-limit check and Jira tickets.",
+        "Protected shared library, Maven Enforcer, Nexus, SonarQube gate, Snyk SCA/container/IaC/monitor, Gitleaks on the diff, Hadolint, Cosign with SBOM and provenance attestations, Kyverno admission policy, exception register, ephemeral, authenticated and scheduled ZAP, login rate-limit check, Jira tickets and failure notifications.",
         """
         {
+          "layout": "sharedLibrary",
+          "clusterPolicy": { "enabled": true, "disallowLatestTag": true, "requireRunAsNonRoot": true },
+          "notifications": { "events": ["failure", "fixed", "approval", "productionDeployed"] },
           "dependencyProxy": { "type": "nexus", "baseUrl": "https://nexus.example.com", "credentialId": "nexus-credentials" },
           "quality": { "enabled": true, "platform": "sonarQube", "waitForQualityGate": true, "abortOnQualityGateFailure": true },
           "security": {
             "secretScan": true,
             "secretScanScope": "diff",
             "dependencyPinning": true,
+            "dockerfileLint": true,
+            "allowedBaseRegistries": ["docker.io", "mcr.microsoft.com", "gcr.io"],
+            "exceptionRegister": true,
             "dependencyScanners": ["snyk"],
             "sbom": true,
             "containerScan": true,
@@ -39,7 +45,7 @@ public static class BuiltInPresets
               "schedule": { "enabled": true, "environment": "test", "baselineCron": "H */6 * * *", "authenticatedDaily": true }
             }
           },
-          "signing": { "enabled": true },
+          "signing": { "enabled": true, "attestations": true },
           "rateLimit": { "enabled": true, "environments": ["test"] },
           "ticketing": { "provider": "jira", "projectKey": "SEC", "minSeverity": "high", "pullRequests": true, "sources": ["secretScan", "sonar", "dast", "accessControl"] },
           "triggers": { "checks": "pullRequests", "package": "deployBranches" }

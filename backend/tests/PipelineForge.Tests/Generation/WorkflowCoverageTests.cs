@@ -12,7 +12,24 @@ public class WorkflowCoverageTests
     {
         var config = PresetMerger.Apply(Samples.MavenHelm(), BuiltInPresets.SecureJava.ConfigJson);
         config.Agent.Type = agent;
+        // The preset defaults to the shared library; most assertions read the in-repository paths.
+        config.Layout = PipelineLayout.InRepo;
         return config;
+    }
+
+    [Fact]
+    public void Built_in_preset_turns_on_the_safe_defaults()
+    {
+        var config = PresetMerger.Apply(Samples.MavenHelm(), BuiltInPresets.SecureJava.ConfigJson);
+        Assert.Equal(PipelineLayout.SharedLibrary, config.Layout);
+        Assert.True(config.Signing.Attestations);
+        Assert.True(config.ClusterPolicy.Enabled);
+        Assert.True(config.Security.DockerfileLint);
+        Assert.True(config.Security.ExceptionRegister);
+        var result = PipelineGenerator.Generate(config);
+        Assert.True(result.Success, string.Join("\n", result.Errors));
+        Assert.Contains(result.Files, f => f.Path == "library/vars/pfOrders.groovy");
+        Assert.Contains(result.Files, f => f.Path == "deploy/policies/kyverno-policies.yaml");
     }
 
     private static Dictionary<string, string> Files(PipelineConfig config)
