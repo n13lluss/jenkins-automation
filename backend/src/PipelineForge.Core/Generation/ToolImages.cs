@@ -27,6 +27,8 @@ public static class ToolImages
         ["ssh"] = "alpine:3.22",
         ["curl"] = "curlimages/curl:8.16.0",
         ["python"] = "python:3.13-slim",
+        ["flyway"] = "flyway/flyway:10.22.0-alpine",
+        ["liquibase"] = "liquibase/liquibase:4.30.0",
     };
 
     public static string DefaultVersion(Ecosystem e) => e switch

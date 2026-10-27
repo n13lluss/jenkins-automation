@@ -1,9 +1,10 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { ECOSYSTEMS, defaultDeploy, newModule, slug } from "@/lib/defaults";
+import { ECOSYSTEMS, newEnvironment, newModule, slug } from "@/lib/defaults";
 import type { AiProvider, DastMode, DependencyScanner, DeployTargetType, Ecosystem, EnvironmentConfig, PipelineConfig, PipelineLayout, Severity } from "@/lib/types";
 import { Alert, Button, Card, Field, Input, Select, TextArea, Toggle } from "../ui";
+import { EnvironmentSafety } from "./operationsSections";
 
 export type SectionProps = {
   config: PipelineConfig;
@@ -337,7 +338,7 @@ export function EnvironmentsSection({ config: c, update, error, locked, readOnly
               onClick={() =>
                 update((d) => {
                   const key = `env${d.environments.length + 1}`;
-                  d.environments.push({ key, displayName: key, branchPattern: "develop", requiresApproval: false, url: null, deploy: defaultDeploy(d.name, key) });
+                  d.environments.push(newEnvironment(d.name, key));
                 })
               }
             >
@@ -352,7 +353,7 @@ export function EnvironmentsSection({ config: c, update, error, locked, readOnly
         {error("environments") && <Alert tone="danger" title={error("environments")} />}
         <div className="flex flex-col gap-3">
           {c.environments.map((env, i) => (
-            <EnvironmentCard key={i} env={env} index={i} earlier={c.environments.slice(0, i)} {...{ update, error, readOnly: ro("environments") }} />
+            <EnvironmentCard key={i} env={env} index={i} earlier={c.environments.slice(0, i)} migrations={c.migrations.tool} {...{ update, error, readOnly: ro("environments") }} />
           ))}
         </div>
       </Card>
@@ -409,6 +410,7 @@ function EnvironmentCard({
   env,
   index: i,
   earlier,
+  migrations,
   update,
   error,
   readOnly,
@@ -416,6 +418,7 @@ function EnvironmentCard({
   env: EnvironmentConfig;
   index: number;
   earlier: EnvironmentConfig[];
+  migrations: PipelineConfig["migrations"]["tool"];
   update: SectionProps["update"];
   error: SectionProps["error"];
   readOnly: boolean;
@@ -485,6 +488,7 @@ function EnvironmentCard({
           </>
         )}
       </Grid>
+      {d.type !== "none" && <EnvironmentSafety env={env} index={i} migrations={migrations} update={update} error={error} readOnly={readOnly} />}
       {!readOnly && (
         <div className="mt-2 flex justify-end">
           <Button variant="ghost" className="text-danger" onClick={() => update((c) => void c.environments.splice(i, 1))}>

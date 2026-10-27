@@ -27,6 +27,7 @@ public sealed class PipelineConfig
     public AiReviewConfig AiReview { get; set; } = new();
     public List<CustomStage> CustomStages { get; set; } = [];
     public PipelineOptions Options { get; set; } = new();
+    public MigrationConfig Migrations { get; set; } = new();
 }
 
 public enum PipelineLayout { InRepo, SharedLibrary }
@@ -316,6 +317,58 @@ public sealed class EnvironmentConfig
     /// </summary>
     public string? PromoteFrom { get; set; }
     public DeployTarget Deploy { get; set; } = new();
+    /// <summary>Post-deploy health check against <see cref="Url"/>.</summary>
+    public HealthCheckConfig Health { get; set; } = new();
+    /// <summary>Restore the previous release when the deploy or its health check fails.</summary>
+    public bool RollbackOnFailure { get; set; } = true;
+    /// <summary>Database the migrations run against before this environment deploys.</summary>
+    public DatabaseConfig? Database { get; set; }
+    /// <summary>Application secrets synced into the namespace by External Secrets Operator (Helm only).</summary>
+    public AppSecretsConfig? AppSecrets { get; set; }
+}
+
+public sealed class HealthCheckConfig
+{
+    public string Path { get; set; } = "/";
+    public int ExpectedStatus { get; set; } = 200;
+    /// <summary>Consecutive successful answers needed.</summary>
+    public int Successes { get; set; } = 3;
+    public int TimeoutSeconds { get; set; } = 300;
+}
+
+public sealed class DatabaseConfig
+{
+    public string JdbcUrl { get; set; } = "";
+    /// <summary>Username with password credential for the migration user.</summary>
+    public string CredentialId { get; set; } = "db-migrations";
+}
+
+public enum SecretStoreKind { ClusterSecretStore, SecretStore }
+
+public sealed class AppSecretsConfig
+{
+    public string StoreName { get; set; } = "vault";
+    public SecretStoreKind StoreKind { get; set; } = SecretStoreKind.ClusterSecretStore;
+    public string RefreshInterval { get; set; } = "1h";
+    /// <summary>Only names and paths; values stay in the secret store.</summary>
+    public List<AppSecretKey> Keys { get; set; } = [];
+}
+
+public sealed class AppSecretKey
+{
+    /// <summary>Environment variable name in the container.</summary>
+    public string Name { get; set; } = "";
+    public string RemoteKey { get; set; } = "";
+    public string? Property { get; set; }
+}
+
+public enum MigrationTool { None, InApp, Flyway, Liquibase }
+
+public sealed class MigrationConfig
+{
+    public MigrationTool Tool { get; set; } = MigrationTool.None;
+    /// <summary>Flyway: directory with the SQL migrations. Liquibase: the changelog file.</summary>
+    public string Path { get; set; } = "src/main/resources/db/migration";
 }
 
 public sealed class DeployTarget

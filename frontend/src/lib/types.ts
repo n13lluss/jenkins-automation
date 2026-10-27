@@ -64,7 +64,20 @@ export type EnvironmentConfig = {
   requiresApproval: boolean;
   promoteFrom?: string | null;
   deploy: DeployTarget;
+  health: { path: string; expectedStatus: number; successes: number; timeoutSeconds: number };
+  rollbackOnFailure: boolean;
+  database?: { jdbcUrl: string; credentialId: string } | null;
+  appSecrets?: AppSecrets | null;
 };
+
+export type AppSecrets = {
+  storeName: string;
+  storeKind: "clusterSecretStore" | "secretStore";
+  refreshInterval: string;
+  keys: { name: string; remoteKey: string; property?: string | null }[];
+};
+
+export type MigrationTool = "none" | "inApp" | "flyway" | "liquibase";
 
 export type PipelineLayout = "inRepo" | "sharedLibrary";
 
@@ -148,6 +161,7 @@ export type PipelineConfig = {
     minSeverity: Severity;
     pullRequestsOnly: boolean;
   };
+  migrations: { tool: MigrationTool; path: string };
   customStages: { name: string; steps: string; origin: "user" | "imported" }[];
   options: { timeoutMinutes: number; buildsToKeep: number; disableConcurrentBuilds: boolean };
 };

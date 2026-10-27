@@ -45,12 +45,27 @@ export function defaultDeploy(app: string, key: string): DeployTarget {
   };
 }
 
+export function newEnvironment(app: string, key: string, displayName = key, branchPattern = "develop", requiresApproval = false): EnvironmentConfig {
+  return {
+    key,
+    displayName,
+    branchPattern,
+    requiresApproval,
+    url: null,
+    deploy: defaultDeploy(app, key),
+    health: { path: "/", expectedStatus: 200, successes: 3, timeoutSeconds: 300 },
+    rollbackOnFailure: true,
+    database: null,
+    appSecrets: null,
+  };
+}
+
 export function dtap(app: string): EnvironmentConfig[] {
   return [
-    { key: "dev", displayName: "Development", branchPattern: "develop", requiresApproval: false, url: null, deploy: defaultDeploy(app, "dev") },
-    { key: "test", displayName: "Test", branchPattern: "develop", requiresApproval: false, url: null, deploy: defaultDeploy(app, "test") },
-    { key: "acc", displayName: "Acceptance", branchPattern: "release/*", requiresApproval: false, url: null, deploy: defaultDeploy(app, "acc") },
-    { key: "prod", displayName: "Production", branchPattern: "main", requiresApproval: true, url: null, deploy: defaultDeploy(app, "prod") },
+    newEnvironment(app, "dev", "Development", "develop"),
+    newEnvironment(app, "test", "Test", "develop"),
+    newEnvironment(app, "acc", "Acceptance", "release/*"),
+    newEnvironment(app, "prod", "Production", "main", true),
   ];
 }
 
@@ -140,6 +155,7 @@ export function blankConfig(name = "app"): PipelineConfig {
       pullRequestsOnly: true,
     },
     customStages: [],
+    migrations: { tool: "none", path: "src/main/resources/db/migration" },
     options: { timeoutMinutes: 60, buildsToKeep: 20, disableConcurrentBuilds: true },
   };
 }

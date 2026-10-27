@@ -35,6 +35,10 @@ public static partial class ConfigValidator
     [GeneratedRegex(@"^/[A-Za-z0-9._~/%-]{0,200}$")] private static partial Regex UrlPathRx();
     [GeneratedRegex(@"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")] private static partial Regex FieldRx();
     [GeneratedRegex(@"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")] private static partial Regex LibraryNameRx();
+    [GeneratedRegex(@"^jdbc:(postgresql|mysql|mariadb|sqlserver|oracle:thin):[A-Za-z0-9@/:._;=?&%-]{1,300}$")] private static partial Regex JdbcRx();
+    [GeneratedRegex(@"^[A-Z_][A-Z0-9_]{0,63}$")] private static partial Regex EnvVarRx();
+    [GeneratedRegex(@"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")] private static partial Regex SecretPathRx();
+    [GeneratedRegex(@"^[0-9]{1,4}[smh]$")] private static partial Regex DurationRx();
     [GeneratedRegex(@"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")] private static partial Regex RepositoryRx();
     [GeneratedRegex(@"^[A-Z_][A-Z0-9_]{0,63}=[A-Za-z0-9._:/,@=-]{0,200}$")] private static partial Regex AppEnvRx();
 
@@ -42,6 +46,7 @@ public static partial class ConfigValidator
 
     public static bool IsIdentifier(string? v) => v is not null && IdentifierRx().IsMatch(v);
     public static bool IsName(string? v) => v is not null && NameRx().IsMatch(v);
+    public static bool IsJdbcUrl(string? v) => v is not null && JdbcRx().IsMatch(v) && !v.Contains("..");
     public static bool IsRepository(string? v) => v is not null && RepositoryRx().IsMatch(v) && !v.Contains("..");
     public static bool IsBranchPattern(string? v) => v is not null && BranchRx().IsMatch(v) && !v.Contains("..");
     public static bool IsHost(string? v) => v is not null && HostRx().IsMatch(v);
@@ -136,6 +141,30 @@ public static partial class ConfigValidator
             Check(IsBranchPattern(e.BranchPattern), $"{p}.branchPattern", "Invalid branch pattern.");
             if (e.Url is not null) Check(IsHttpUrl(e.Url), $"{p}.url", "Must be an http(s) URL without credentials.");
             ValidateDeploy(e.Deploy, $"{p}.deploy", Check);
+            Check(UrlPathRx().IsMatch(e.Health.Path), $"{p}.health.path", "A path such as /actuator/health.");
+            Check(e.Health.ExpectedStatus is >= 100 and <= 599, $"{p}.health.expectedStatus", "An HTTP status.");
+            Check(e.Health.Successes is >= 1 and <= 20, $"{p}.health.successes", "Between 1 and 20.");
+            Check(e.Health.TimeoutSeconds is >= 30 and <= 1800, $"{p}.health.timeoutSeconds", "Between 30 and 1800 seconds.");
+            if (e.Database is { } db)
+            {
+                Check(c.Migrations.Tool is MigrationTool.Flyway or MigrationTool.Liquibase, $"{p}.database", "Choose Flyway or Liquibase under migrations.");
+                Check(IsJdbcUrl(db.JdbcUrl), $"{p}.database.jdbcUrl", "A JDBC URL such as jdbc:postgresql://db:5432/app.");
+                Check(IsIdentifier(db.CredentialId), $"{p}.database.credentialId", "Invalid credential ID.");
+            }
+            if (e.AppSecrets is { } sec)
+            {
+                Check(e.Deploy.Type == DeployTargetType.Helm, $"{p}.appSecrets", "External Secrets apply to Helm environments.");
+                Check(K8sNameRx().IsMatch(sec.StoreName), $"{p}.appSecrets.storeName", "A Kubernetes name.");
+                Check(DurationRx().IsMatch(sec.RefreshInterval), $"{p}.appSecrets.refreshInterval", "A duration such as 1h or 15m.");
+                Check(sec.Keys.Count is >= 1 and <= 50, $"{p}.appSecrets.keys", "Between 1 and 50 keys.");
+                Check(sec.Keys.Select(k => k.Name).Distinct().Count() == sec.Keys.Count, $"{p}.appSecrets.keys", "Variable names must be unique.");
+                foreach (var k in sec.Keys)
+                {
+                    Check(EnvVarRx().IsMatch(k.Name), $"{p}.appSecrets.keys", $"'{k.Name}' is not an environment variable name.");
+                    Check(SecretPathRx().IsMatch(k.RemoteKey) && !k.RemoteKey.Contains(".."), $"{p}.appSecrets.keys", "Remote keys are paths such as app/orders/db.");
+                    if (k.Property is not null) Check(FieldRx().IsMatch(k.Property), $"{p}.appSecrets.keys", "Invalid property name.");
+                }
+            }
             if (e.Deploy.Type != DeployTargetType.None)
                 Check(c.Registry is not null && c.Modules.Any(m => m.Dockerfile is not null),
                     $"{p}.deploy", "Deploys ship container images: add a module with a Dockerfile and a registry.");
@@ -153,6 +182,12 @@ public static partial class ConfigValidator
             if (s.Dast.Mode == DastMode.Api)
                 Check(s.Dast.ApiSpec is not null && (IsHttpUrl(s.Dast.ApiSpec) || IsRelativePath(s.Dast.ApiSpec)),
                     "security.dast.apiSpec", "API scans need an OpenAPI URL or repository path.");
+        }
+
+        if (c.Migrations.Tool is MigrationTool.Flyway or MigrationTool.Liquibase)
+        {
+            Check(IsRelativePath(c.Migrations.Path), "migrations.path", "A repository path.");
+            Check(c.Environments.Any(e => e.Database is not null), "migrations", "Set a database on at least one environment.");
         }
 
         Check(IsIdentifier(c.Compliance.ApproverGroup), "compliance.approverGroup", "Invalid Jenkins user or group.");

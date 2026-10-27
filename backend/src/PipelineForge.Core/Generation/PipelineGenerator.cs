@@ -91,6 +91,8 @@ public static class PipelineGenerator
         {
             Add($"{DefaultChartPath}/Chart.yaml", SupportFilesWriter.HelmChartYaml(ctx));
             Add($"{DefaultChartPath}/templates/app.yaml", SupportFilesWriter.HelmDeploymentTemplate);
+            if (helmEnvs.Any(e => e.AppSecrets is not null))
+                Add($"{DefaultChartPath}/templates/externalsecret.yaml", SupportFilesWriter.HelmExternalSecretTemplate);
         }
         foreach (var e in ctx.DeployEnvironments.Where(e => e.Deploy.Type == DeployTargetType.DockerSsh))
             Add($"deploy/docker/compose.{e.Key}.yml", SupportFilesWriter.Compose(ctx, e));

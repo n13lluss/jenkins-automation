@@ -845,21 +845,32 @@ public static class StageScriptsWriter
                 {{PROMOTE}}
                 {{DIGESTS}}
                 {{VERIFY}}
-                switch (cfg.type) {
-                    case 'helm':
-                        deployHelm(common, cfg)
-                        break
-                    case 'docker-ssh':
-                        deployDockerSsh(common, cfg)
-                        break
-                    case 'azure-app-service':
-                        deployAzure(common, cfg)
-                        break
-                    default:
-                        error("Unsupported deploy type ${cfg.type}")
-                }
-                if (cfg.url) {
-                    smokeTest(common, cfg)
+                {{MIGRATE}}
+                // deployed: the new release reached the target, so a failed health check rolls it back.
+                def deployed = false
+                try {
+                    switch (cfg.type) {
+                        case 'helm':
+                            deployHelm(common, cfg)
+                            break
+                        case 'docker-ssh':
+                            deployDockerSsh(common, cfg)
+                            break
+                        case 'azure-app-service':
+                            deployAzure(common, cfg)
+                            break
+                        default:
+                            error("Unsupported deploy type ${cfg.type}")
+                    }
+                    deployed = true
+                    if (cfg.url) {
+                        healthCheck(common, cfg)
+                    }
+                } catch (e) {
+                    if (cfg.rollback) {
+                        rollback(common, cfg, deployed)
+                    }
+                    throw e
                 }
                 {{TAG}}
                 {{MONITOR}}
@@ -868,6 +879,7 @@ public static class StageScriptsWriter
                .Replace("{{DIGESTS}}", string.Join("\n    ", ctx.ImageModules.Select(m => $"common.safe(env.{GenerationContext.DigestVar(m)}, '^sha256:[a-f0-9]{{64}}$', 'image digest (push or promote the image first)')")))
                .Replace("{{TAG}}", ctx.Promotion ? $"if (cfg.key in [{string.Join(", ", ctx.PromotionSources.Order().Select(Quote))}]) {{\n        tagEnvironment(common, cfg)\n    }}" : "")
                .Replace("{{VERIFY}}", ctx.Signing ? "verifyImages(common)" : "// Images are not signed (signing disabled).")
+               .Replace("{{MIGRATE}}", ctx.Migrations ? "if (cfg.database) {\n        migrate(common, cfg)\n    }" : "")
                .Replace("{{MONITOR}}", ctx.SnykMonitor ? "monitor(common, cfg)" : ""));
         w.Line();
 
@@ -892,19 +904,47 @@ public static class StageScriptsWriter
                         }
                     }
                 }
+
+                // A failed upgrade is already undone by --atomic; only a release that passed the upgrade is rolled back.
+                def rollbackHelm(common, Map cfg, boolean deployed) {
+                    if (!deployed) {
+                        return
+                    }
+                    def h = cfg.helm
+                    withCredentials([file(credentialsId: common.safe(h.kubeconfigCredentialId, '^[A-Za-z0-9._@-]+$', 'credential'), variable: 'KUBECONFIG')]) {
+                        withEnv([
+                            "DEPLOY_RELEASE=${common.safe(h.release, '^[a-z0-9-]+$', 'helm.release')}",
+                            "DEPLOY_NAMESPACE=${common.safe(h.namespace, '^[a-z0-9-]+$', 'helm.namespace')}",
+                        ]) {
+                            common.inTool('helm') {
+                                sh 'helm rollback "$DEPLOY_RELEASE" 0 --namespace "$DEPLOY_NAMESPACE" --wait --timeout 10m'
+                            }
+                        }
+                    }
+                }
                 """);
             w.Line();
         }
 
         if (types.Contains(DeployTargetType.DockerSsh))
         {
-            var digestExports = string.Concat(ctx.ImageModules.Select(m => $" {GenerationContext.DigestVar(m)}='${GenerationContext.DigestVar(m)}'"));
+            var digestExports = string.Concat(ctx.ImageModules.Select(m => $" \"{GenerationContext.DigestVar(m)}=${GenerationContext.DigestVar(m)}\""));
             var sshScript = """
                 HOST="${DEPLOY_HOST%%:*}"
                 PORT="${DEPLOY_HOST##*:}"
                 if [ "$PORT" = "$DEPLOY_HOST" ]; then PORT=22; fi
-                scp -P "$PORT" -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o BatchMode=yes "deploy/docker/compose.$DEPLOY_ENV.yml" "$DEPLOY_USER@$HOST:$DEPLOY_DIR/compose.yml"
-                ssh -p "$PORT" -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o BatchMode=yes "$DEPLOY_USER@$HOST" "cd '$DEPLOY_DIR' && export IMAGE_TAG='$IMAGE_TAG'{{DIGESTS}} && docker compose -f compose.yml pull && docker compose -f compose.yml up -d --remove-orphans"
+                remote() { ssh -p "$PORT" -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o BatchMode=yes "$DEPLOY_USER@$HOST" "$1"; }
+                upload() { scp -P "$PORT" -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o BatchMode=yes "$1" "$DEPLOY_USER@$HOST:$DEPLOY_DIR/$2"; }
+                if [ "$DEPLOY_ACTION" = rollback ]; then
+                    # Restore the last release that was running, if there is one.
+                    remote "cd '$DEPLOY_DIR' && if [ -f compose.previous.yml ]; then cp compose.previous.yml compose.yml && cp .env.previous .env && docker compose -f compose.yml up -d --remove-orphans; else echo 'No previous release to restore'; fi"
+                    exit 0
+                fi
+                printf '%s\\n' "IMAGE_TAG=$IMAGE_TAG"{{DIGESTS}} > release.env
+                upload "deploy/docker/compose.$DEPLOY_ENV.yml" compose.next.yml
+                upload release.env .env.next
+                # Keep the running release as compose.previous.yml / .env.previous for a rollback.
+                remote "cd '$DEPLOY_DIR' && if [ -f compose.yml ] && [ -f .env ]; then cp compose.yml compose.previous.yml && cp .env .env.previous; fi && mv compose.next.yml compose.yml && mv .env.next .env && docker compose -f compose.yml pull && docker compose -f compose.yml up -d --remove-orphans"
                 """;
             sshScript = sshScript.Replace("{{DIGESTS}}", digestExports);
             var runner = ctx.IsKubernetes
@@ -912,7 +952,7 @@ public static class StageScriptsWriter
                 : "common.withCiEnv {\n" + Pad(16) + "sshagent(credentials: [sshCred]) {\n" + Pad(20) + "sh '''\n" + Indent(sshScript, 24) + "\n" + Pad(20) + "'''\n" + Pad(16) + "}\n" + Pad(12) + "}";
             w.Lines($$"""
                 // The remote host pulls images itself: log it in to the registry once (docker login), no credentials are copied.
-                def deployDockerSsh(common, Map cfg) {
+                def deployDockerSsh(common, Map cfg, String action = 'deploy') {
                     def s = cfg.ssh
                     def sshCred = common.safe(s.credentialId, '^[A-Za-z0-9._@-]+$', 'credential')
                     withCredentials([file(credentialsId: common.safe(s.knownHostsCredentialId, '^[A-Za-z0-9._@-]+$', 'credential'), variable: 'KNOWN_HOSTS')]) {
@@ -921,6 +961,7 @@ public static class StageScriptsWriter
                             "DEPLOY_HOST=${common.safe(s.host, '^[A-Za-z0-9.-]+(:[0-9]{1,5})?$', 'ssh.host')}",
                             "DEPLOY_USER=${common.safe(s.user, '^[a-z_][a-z0-9_-]*$', 'ssh.user')}",
                             "DEPLOY_DIR=${common.safe(s.dir, '^/[A-Za-z0-9._/-]*$', 'ssh.dir')}",
+                            "DEPLOY_ACTION=${action == 'rollback' ? 'rollback' : 'deploy'}",
                         ]) {
                             {{runner}}
                         }
@@ -935,8 +976,14 @@ public static class StageScriptsWriter
             var azureRef = $"$REGISTRY/$DEPLOY_IMAGE@${GenerationContext.DigestVar(ctx.ImageModules[0])}";
             w.Lines(("""
                 // Prefer workload identity / managed identity where available; a service principal is used here.
-                def deployAzure(common, Map cfg) {
+                def deployAzure(common, Map cfg, String action = 'deploy') {
                     def a = cfg.azure
+                    def key = common.safe(cfg.key, '^[a-z][a-z0-9-]*$', 'key')
+                    def previous = ''
+                    if (action == 'rollback' && fileExists("reports/rollback-${key}.txt")) {
+                        // Recorded before the deploy as DOCKER|<image>; validated before it reaches the shell.
+                        previous = common.safe(readFile("reports/rollback-${key}.txt").trim(), '^DOCKER[|][A-Za-z0-9._/:@-]+$', 'previous image').substring(7)
+                    }
                     withCredentials([azureServicePrincipal(credentialsId: common.safe(a.credentialId, '^[A-Za-z0-9._@-]+$', 'credential'),
                             subscriptionIdVariable: 'AZ_SUBSCRIPTION_ID', clientIdVariable: 'AZ_CLIENT_ID',
                             clientSecretVariable: 'AZ_CLIENT_SECRET', tenantIdVariable: 'AZ_TENANT_ID')]) {
@@ -945,6 +992,9 @@ public static class StageScriptsWriter
                             "DEPLOY_APP=${common.safe(a.app, '^[A-Za-z0-9-]+$', 'azure.app')}",
                             "DEPLOY_SLOT=${a.slot ? common.safe(a.slot, '^[A-Za-z0-9-]+$', 'azure.slot') : ''}",
                             "DEPLOY_IMAGE=${common.safe(a.image, '^[a-z0-9][a-z0-9._/-]*$', 'azure.image')}",
+                            "DEPLOY_ENV=${key}",
+                            "DEPLOY_ACTION=${action == 'rollback' ? 'rollback' : 'deploy'}",
+                            "PREVIOUS_IMAGE=${previous}",
                         ]) {
                             common.inTool('azure-cli') {
                                 sh '''
@@ -954,11 +1004,25 @@ public static class StageScriptsWriter
                                     az login --service-principal --username "$AZ_CLIENT_ID" --password "$AZ_CLIENT_SECRET" --tenant "$AZ_TENANT_ID" --output none
                                     az account set --subscription "$AZ_SUBSCRIPTION_ID"
                                     set -x
+                                    if [ "$DEPLOY_ACTION" = rollback ]; then
+                                        if [ -n "$DEPLOY_SLOT" ]; then
+                                            # Swapping again puts the previous release back in production.
+                                            az webapp deployment slot swap --resource-group "$DEPLOY_RG" --name "$DEPLOY_APP" --slot "$DEPLOY_SLOT" --target-slot production
+                                        elif [ -n "$PREVIOUS_IMAGE" ]; then
+                                            az webapp config container set --resource-group "$DEPLOY_RG" --name "$DEPLOY_APP" --container-image-name "$PREVIOUS_IMAGE" --output none
+                                            az webapp restart --resource-group "$DEPLOY_RG" --name "$DEPLOY_APP"
+                                        else
+                                            echo 'No previous image recorded; nothing to roll back.'
+                                        fi
+                                        exit 0
+                                    fi
+                                    mkdir -p reports
                                     if [ -n "$DEPLOY_SLOT" ]; then
                                         az webapp config container set --resource-group "$DEPLOY_RG" --name "$DEPLOY_APP" --slot "$DEPLOY_SLOT" --container-image-name "$REGISTRY/$DEPLOY_IMAGE:$IMAGE_TAG" --output none
                                         az webapp restart --resource-group "$DEPLOY_RG" --name "$DEPLOY_APP" --slot "$DEPLOY_SLOT"
                                         az webapp deployment slot swap --resource-group "$DEPLOY_RG" --name "$DEPLOY_APP" --slot "$DEPLOY_SLOT" --target-slot production
                                     else
+                                        az webapp config show --resource-group "$DEPLOY_RG" --name "$DEPLOY_APP" --query linuxFxVersion --output tsv > "reports/rollback-$DEPLOY_ENV.txt" || true
                                         az webapp config container set --resource-group "$DEPLOY_RG" --name "$DEPLOY_APP" --container-image-name "$REGISTRY/$DEPLOY_IMAGE:$IMAGE_TAG" --output none
                                         az webapp restart --resource-group "$DEPLOY_RG" --name "$DEPLOY_APP"
                                     fi
@@ -972,16 +1036,101 @@ public static class StageScriptsWriter
         }
 
         w.Lines("""
-            def smokeTest(common, Map cfg) {
-                withEnv(["DEPLOY_URL=${common.safeUrl(cfg.url)}"]) {
+            // Passes after N consecutive answers with the expected status before the timeout.
+            def healthCheck(common, Map cfg) {
+                def h = cfg.health ?: [:]
+                withEnv([
+                    "HEALTH_URL=${common.safeUrl(cfg.url).replaceAll('/+$', '')}${common.safe(h.path ?: '/', '^/[A-Za-z0-9._~/%-]*$', 'health.path')}",
+                    "HEALTH_STATUS=${common.safe(String.valueOf(h.status ?: 200), '^[1-5][0-9][0-9]$', 'health.status')}",
+                    "HEALTH_SUCCESSES=${common.safe(String.valueOf(h.successes ?: 3), '^[0-9]{1,2}$', 'health.successes')}",
+                    "HEALTH_TIMEOUT=${common.safe(String.valueOf(h.timeout ?: 300), '^[0-9]{1,4}$', 'health.timeout')}",
+                ]) {
                     common.inTool('curl') {
-                        sh 'curl -fsS -o /dev/null --retry 10 --retry-delay 6 --retry-all-errors --max-time 20 "$DEPLOY_URL"'
+                        sh '''
+                            deadline=$(( $(date +%s) + HEALTH_TIMEOUT ))
+                            ok=0
+                            while [ "$(date +%s)" -lt "$deadline" ]; do
+                                code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$HEALTH_URL" || true)
+                                if [ "$code" = "$HEALTH_STATUS" ]; then
+                                    ok=$((ok + 1))
+                                    if [ "$ok" -ge "$HEALTH_SUCCESSES" ]; then
+                                        echo "Healthy: $ok answers with HTTP $code"
+                                        exit 0
+                                    fi
+                                else
+                                    echo "Health check got HTTP $code, expected $HEALTH_STATUS"
+                                    ok=0
+                                fi
+                                sleep 5
+                            done
+                            echo "Not healthy within ${HEALTH_TIMEOUT}s: $HEALTH_URL"
+                            exit 1
+                        '''
                     }
                 }
             }
-            """);
+
+            def rollback(common, Map cfg, boolean deployed) {
+                echo "Deploy to ${cfg.key} failed; rolling back."
+                catchError(buildResult: 'FAILURE', stageResult: 'FAILURE', message: 'Rollback failed; restore the environment by hand.') {
+                    switch (cfg.type) {
+            {{ROLLBACK}}
+                    }
+                }
+            }
+            """.Replace("{{ROLLBACK}}", string.Join("\n", RollbackCases(ctx))));
+        if (ctx.Migrations) Migrate(w, ctx);
         w.Line().Line("return this");
         return w.ToString();
+    }
+
+    private static IEnumerable<string> RollbackCases(GenerationContext ctx)
+    {
+        var types = ctx.DeployEnvironments.Select(e => e.Deploy.Type).ToHashSet();
+        if (types.Contains(DeployTargetType.Helm))
+            yield return "            case 'helm':\n                rollbackHelm(common, cfg, deployed)\n                break";
+        if (types.Contains(DeployTargetType.DockerSsh))
+            yield return "            case 'docker-ssh':\n                deployDockerSsh(common, cfg, 'rollback')\n                break";
+        // A slot swap only happened when the deploy got that far; without a slot the recorded image is restored.
+        if (types.Contains(DeployTargetType.AzureAppService))
+            yield return "            case 'azure-app-service':\n                if (deployed || !cfg.azure.slot) {\n                    deployAzure(common, cfg, 'rollback')\n                }\n                break";
+    }
+
+    /// <summary>Flyway or Liquibase against the environment's database; credentials only through environment variables.</summary>
+    private static void Migrate(CodeWriter w, GenerationContext ctx)
+    {
+        var m = ctx.Config.Migrations;
+        var flyway = m.Tool == MigrationTool.Flyway;
+        const string jdbc = "common.safe(db.jdbcUrl, '^jdbc:(postgresql|mysql|mariadb|sqlserver|oracle:thin):[A-Za-z0-9@/:._;=?&%-]+$', 'database.jdbcUrl')";
+        var (user, password) = flyway ? ("FLYWAY_USER", "FLYWAY_PASSWORD") : ("LIQUIBASE_COMMAND_USERNAME", "LIQUIBASE_COMMAND_PASSWORD");
+        w.Line();
+        w.Line("// Database migrations run before the new release and are not rolled back: keep them backwards compatible (expand/contract).");
+        w.Block("def migrate(common, Map cfg)", () =>
+        {
+            w.Line("def db = cfg.database");
+            w.Block($"withCredentials([usernamePassword(credentialsId: common.safe(db.credentialId, '^[A-Za-z0-9._@-]+$', 'credential'), usernameVariable: '{user}', passwordVariable: '{password}')])", () =>
+            {
+                w.Line("withEnv([");
+                w.Indent(() =>
+                {
+                    if (flyway)
+                    {
+                        w.Line($"\"FLYWAY_URL=${{{jdbc}}}\",");
+                        w.Line($"\"FLYWAY_LOCATIONS=filesystem:${{env.WORKSPACE}}/{m.Path}\",");
+                        w.Line("'FLYWAY_VALIDATE_MIGRATION_NAMING=true',");
+                    }
+                    else
+                    {
+                        var slash = m.Path.LastIndexOf('/');
+                        w.Line($"\"LIQUIBASE_COMMAND_URL=${{{jdbc}}}\",");
+                        w.Line($"\"LIQUIBASE_SEARCH_PATH=${{env.WORKSPACE}}/{(slash < 0 ? "" : m.Path[..slash])}\",");
+                        w.Line($"{Quote("LIQUIBASE_COMMAND_CHANGELOG_FILE=" + (slash < 0 ? m.Path : m.Path[(slash + 1)..]))},");
+                    }
+                });
+                w.Block("])", () => w.Block($"common.inTool({Quote(flyway ? "flyway" : "liquibase")})",
+                    () => w.Line(flyway ? "sh 'flyway migrate'" : "sh 'liquibase update'")));
+            });
+        });
     }
 
     public static string HelmKey(string moduleName) => moduleName.Replace('.', '-');

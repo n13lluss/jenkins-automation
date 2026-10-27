@@ -60,6 +60,8 @@ public static class DocsWriter
         foreach (var e in ctx.DeployEnvironments)
         {
             var d = e.Deploy;
+            if (ctx.Migrations && e.Database is { } db)
+                Add(db.CredentialId, "Username with password", $"Database migration user for {e.DisplayName}");
             switch (d.Type)
             {
                 case DeployTargetType.Helm:
@@ -193,6 +195,20 @@ public static class DocsWriter
             sb.AppendLine("### Cluster admission policy").AppendLine();
             sb.AppendLine("Install Kyverno, create the key secret (`kubectl -n kyverno create secret generic pipelineforge-cosign-pub --from-file=cosign.pub`) and apply `deploy/policies/kyverno-policies.yaml`. The cluster then refuses unsigned images in the deploy namespaces, even when someone deploys by hand.").AppendLine();
         }
+        sb.AppendLine("### Deploy safety").AppendLine();
+        sb.AppendLine("After each deploy the pipeline polls the environment URL plus its health path until it gets the expected status several times in a row. "
+            + "When the deploy or the health check fails and rollback is on, the previous release is restored (Helm `rollback`, the previous compose file and `.env` on the Docker host, "
+            + "a slot swap back or the recorded image on Azure) and the build still fails.").AppendLine();
+        if (ctx.Migrations)
+            sb.AppendLine($"Database migrations ({c.Migrations.Tool}, `{c.Migrations.Path}`) run before each deploy that has a database. They are not rolled back: write backwards-compatible (expand/contract) migrations. The agent needs network access to the database.").AppendLine();
+        else if (c.Migrations.Tool == MigrationTool.InApp)
+            sb.AppendLine("Database migrations run inside the application at start-up (e.g. Spring Boot with Flyway). They are not rolled back with the release: keep them backwards compatible.").AppendLine();
+        if (ctx.DeployEnvironments.Any(e => e.AppSecrets is not null))
+            sb.AppendLine("Application secrets come from External Secrets Operator: install it and create the referenced (Cluster)SecretStore. The chart's `ExternalSecret` copies the listed keys into a Secret that the pods load with `envFrom`; secret values never pass through Jenkins.").AppendLine();
+        if (ctx.DeployEnvironments.Any(e => e.Deploy.Type == DeployTargetType.DockerSsh))
+            sb.AppendLine("Docker hosts: keep application secrets in an `env_file` on the host (owned by the deploy user, mode 600), not in the repository.").AppendLine();
+        if (ctx.DeployEnvironments.Any(e => e.Deploy.Type == DeployTargetType.AzureAppService))
+            sb.AppendLine("Azure App Service: reference secrets from Key Vault in the app settings (`@Microsoft.KeyVault(...)`) with the app's managed identity.").AppendLine();
         sb.AppendLine("### Block merges on failed checks").AppendLine();
         sb.AppendLine("Checks only block a merge when Bitbucket or GitHub requires the Jenkins build. Use \"Require the Jenkins build before merge\" in PipelineForge, or set branch protection / merge checks by hand for " + string.Join(", ", c.Environments.Select(e => $"`{e.BranchPattern}`").Distinct()) + ".").AppendLine();
         if (ctx.Scheduled)
@@ -272,6 +288,7 @@ public static class DocsWriter
         "security/maven-enforcer.xml" => "Maven Enforcer plugin snippet for pom.xml",
         "security/.hadolint.yaml" => "Hadolint rules and trusted base registries",
         "jenkins/scripts/provenance.py" => "SLSA build provenance for attestations",
+        "deploy/helm/chart/templates/externalsecret.yaml" => "External Secrets: application secrets from the secret store",
         "deploy/policies/kyverno-policies.yaml" => "Kyverno admission policies (signed images, no :latest, non-root)",
         "jenkins/config/maven-settings.xml" => "Maven mirror to the repository manager",
         "jenkins/config/proxy.init.gradle" => "Gradle repositories through the repository manager",

@@ -7,6 +7,7 @@ import type { BuiltInPreset, GenerationResponse, PipelineConfig, Preset, Project
 import { canEdit, useWorkspace } from "../AppShell";
 import { Alert, Badge, Button, Card, cx, Field, Select, Spinner } from "../ui";
 import { ActionsPanel } from "./ActionsPanel";
+import { OperationsSection } from "./operationsSections";
 import { FileViewer } from "./FileViewer";
 import { AiSection, CustomStagesSection, EnvironmentsSection, ProjectSection, QualitySection, SecuritySection, type SectionProps } from "./sections";
 import { DynamicTestingSection, ScannerOptionsCard, SupplyChainSection, TicketsSection, TriggersCard } from "./workflowSections";
@@ -40,6 +41,7 @@ const STEPS: Step[] = [
     ),
   },
   { id: "dynamic", label: "Dynamic testing", prefixes: ["security.dast.ephemeral", "security.dast.authenticated", "security.dast.schedule", "rateLimit"], render: (p) => <DynamicTestingSection {...p} /> },
+  { id: "operations", label: "Operations", prefixes: ["migrations"], render: (p) => <OperationsSection {...p} /> },
   { id: "ai", label: "AI review", prefixes: ["aiReview"], render: (p) => <AiSection {...p} /> },
   { id: "tickets", label: "Tickets", prefixes: ["ticketing"], render: (p) => <TicketsSection {...p} /> },
   { id: "custom", label: "Custom stages", prefixes: ["customStages"], render: (p) => <CustomStagesSection {...p} /> },

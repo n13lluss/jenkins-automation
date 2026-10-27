@@ -20,6 +20,8 @@ public class ExportSamples
                      ("promote-docker", SupplyChainTests.Promoting(PipelineForge.Core.Model.AgentType.Docker)),
                      ("library-k8s", SharedLibraryTests.Library()),
                      ("library-docker", SharedLibraryTests.Library(PipelineForge.Core.Model.AgentType.Docker)),
+                     ("safe-k8s-flyway", DeploySafetyTests.Safe()),
+                     ("safe-docker-liquibase", DeploySafetyTests.Safe(PipelineForge.Core.Model.AgentType.Docker, PipelineForge.Core.Model.MigrationTool.Liquibase)),
                  })
         {
             var result = PipelineGenerator.Generate(config);

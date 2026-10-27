@@ -32,6 +32,7 @@ public sealed class GenerationContext
     /// <summary>Environment keys other environments promote from; their deploys tag the running digest.</summary>
     public IReadOnlySet<string> PromotionSources => DeployEnvironments.Where(e => e.PromoteFrom is not null).Select(e => e.PromoteFrom!).ToHashSet();
     public bool Promotion => PromotionSources.Count > 0;
+    public bool Migrations => Config.Migrations.Tool is MigrationTool.Flyway or MigrationTool.Liquibase && DeployEnvironments.Any(e => e.Database is not null);
     public bool Ephemeral => Config.Security.Dast.Ephemeral.Enabled && ImageModules.Count > 0;
     public bool Authenticated => Config.Security.Dast.Authenticated.Enabled;
     public bool Scheduled => Config.Security.Dast.Schedule.Enabled;
@@ -108,6 +109,7 @@ public sealed class GenerationContext
         if (Signing && DeployEnvironments.Count > 0) Tool(deploy, "cosign");
         if (SnykMonitor) Tool(deploy, "snyk");
         if (Promotion) Tool(deploy, "crane");
+        if (Migrations) Tool(deploy, Config.Migrations.Tool == MigrationTool.Flyway ? "flyway" : "liquibase");
         if (RateLimit || Authenticated || Ticketing) Tool(deploy, "python");
         DeployContainers = deploy;
     }
