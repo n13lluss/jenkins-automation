@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api, errorMessage } from "@/lib/api";
-import type { AiReview, Connection, IngestToken, Project, Run } from "@/lib/types";
+import type { AiReview, Connection, FileDrift, IngestToken, Project, Run } from "@/lib/types";
 import { Alert, Badge, Button, Card, Field, Input, Select } from "../ui";
 
 export function ActionsPanel({
@@ -13,6 +13,7 @@ export function ActionsPanel({
   canEdit,
   admin,
   valid,
+  onSelect,
 }: {
   ws: string;
   project: Project;
@@ -21,6 +22,7 @@ export function ActionsPanel({
   canEdit: boolean;
   admin: boolean;
   valid: boolean;
+  onSelect: (paths: string[]) => void;
 }) {
   const [connections, setConnections] = useState<Connection[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
@@ -38,6 +40,7 @@ export function ActionsPanel({
   return (
     <div className="flex flex-col gap-4">
       {dirty && <Alert tone="warn" title="Save your changes first: the actions below use the saved pipeline." />}
+      {canEdit && project.repository && <DriftCard ws={ws} project={project} disabled={disabled} onSelect={onSelect} />}
       <div className="grid gap-4 md:grid-cols-2">
         <Card title="Download">
           <p className="mb-3 text-sm text-muted">{selected.size ? `${selected.size} selected file(s)` : "All files"} as a zip.</p>
@@ -131,6 +134,89 @@ function PullRequestCard({ ws, project, files, disabled }: { ws: string; project
         {error && <Alert tone="danger" title={error} />}
       </div>
     </Card>
+  );
+}
+
+const DRIFT_LABEL: Record<FileDrift["status"], { label: string; tone: "ok" | "warn" | "danger" | "neutral" | "accent" }> = {
+  identical: { label: "up to date", tone: "ok" },
+  changed: { label: "changed", tone: "warn" },
+  customised: { label: "edited by hand", tone: "danger" },
+  missing: { label: "missing", tone: "accent" },
+  unavailable: { label: "not read", tone: "neutral" },
+};
+
+function DriftCard({ ws, project, disabled, onSelect }: { ws: string; project: Project; disabled: boolean; onSelect: (paths: string[]) => void }) {
+  const [drift, setDrift] = useState<FileDrift[] | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function compare() {
+    setBusy(true);
+    setError(null);
+    try {
+      setDrift(await api<FileDrift[]>(`workspaces/${ws}/pipelines/${project.id}/drift`));
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const outdated = drift?.filter((d) => d.status === "changed" || d.status === "customised" || d.status === "missing") ?? [];
+  return (
+    <Card title="Compare with repository">
+      <div className="flex flex-col gap-3">
+        <p className="text-sm text-muted">
+          Compares the generated files with {project.repository}
+          {project.branch ? ` (${project.branch})` : ""}. Select the changed files and open a pull request to update an existing pipeline.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={compare} busy={busy} disabled={disabled}>
+            Compare
+          </Button>
+          {outdated.length > 0 && <Button onClick={() => onSelect(outdated.map((d) => d.path))}>Select {outdated.length} changed file(s)</Button>}
+        </div>
+        {drift && outdated.length === 0 && <Alert tone="ok" title="The repository is up to date with this pipeline." />}
+        {drift && (
+          <ul className="flex flex-col gap-1 text-sm">
+            {drift
+              .filter((d) => d.status !== "identical")
+              .map((d) => (
+                <li key={d.path} className="flex flex-col gap-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge tone={DRIFT_LABEL[d.status].tone}>{DRIFT_LABEL[d.status].label}</Badge>
+                    {d.diff ? (
+                      <button type="button" className="text-left underline" onClick={() => setOpen(open === d.path ? null : d.path)}>
+                        <code className="text-xs">{d.path}</code>
+                      </button>
+                    ) : (
+                      <code className="text-xs">{d.path}</code>
+                    )}
+                    {d.repositoryVersion && <span className="text-xs text-muted">from version {d.repositoryVersion}</span>}
+                    {d.note && <span className="text-xs text-muted">{d.note}</span>}
+                  </div>
+                  {open === d.path && d.diff && <DiffView diff={d.diff} />}
+                </li>
+              ))}
+          </ul>
+        )}
+        {error && <Alert tone="danger" title={error} />}
+      </div>
+    </Card>
+  );
+}
+
+function DiffView({ diff }: { diff: string }) {
+  return (
+    <pre className="max-h-96 overflow-auto rounded-md border border-border bg-code p-2 text-xs leading-5">
+      {diff.split("\n").map((line, i) => (
+        <div
+          key={i}
+          className={line.startsWith("+") && !line.startsWith("+++") ? "text-ok" : line.startsWith("-") && !line.startsWith("---") ? "text-danger" : line.startsWith("@@") ? "text-muted" : undefined}
+        >
+          {line || " "}
+        </div>
+      ))}
+    </pre>
   );
 }
 

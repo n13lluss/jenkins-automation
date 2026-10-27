@@ -205,6 +205,32 @@ public class ApiTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Drift_compares_generated_files_with_the_repository()
+    {
+        var c = _f.As("dee");
+        var ws = await Workspace(c, "Drift");
+        var conn = await Read(await c.PostAsJsonAsync($"/api/workspaces/{ws}/connections",
+            new { kind = "scm", name = "GitHub", provider = "GitHub", baseUrl = "https://api.github.com", secret = "ghp_x" }));
+        var project = await Read(await c.PostAsJsonAsync($"/api/workspaces/{ws}/pipelines", new
+        {
+            name = "drifty", source = "scan", config = Samples.MavenHelm(), scmConnectionId = conn.GetProperty("id").GetGuid(), repository = "acme/drifty", branch = "develop",
+        }, Json));
+        var id = project.GetProperty("id").GetGuid();
+        var files = PipelineForge.Core.Generation.PipelineGenerator.Generate(Samples.MavenHelm()).Files.ToDictionary(f => f.Path, f => f.Content);
+        _f.GitHub.Files[("acme/drifty", "develop", "Jenkinsfile")] = files["Jenkinsfile"].Replace("pipelineforge-version: ", "pipelineforge-version: 0.9.0 was ");
+        _f.GitHub.Files[("acme/drifty", "develop", "jenkins/stages/build.groovy")] = files["jenkins/stages/build.groovy"] + "// local change\n";
+        _f.GitHub.Files[("acme/drifty", "develop", "jenkins/stages/common.groovy")] = "def init() { }\n";
+
+        var drift = (await Read(await c.GetAsync($"/api/workspaces/{ws}/pipelines/{id}/drift"))).EnumerateArray()
+            .ToDictionary(d => d.GetProperty("path").GetString()!, d => d);
+        Assert.Equal("identical", drift["Jenkinsfile"].GetProperty("status").GetString());
+        Assert.Equal("changed", drift["jenkins/stages/build.groovy"].GetProperty("status").GetString());
+        Assert.Contains("-// local change", drift["jenkins/stages/build.groovy"].GetProperty("diff").GetString());
+        Assert.Equal("customised", drift["jenkins/stages/common.groovy"].GetProperty("status").GetString());
+        Assert.Equal("missing", drift["docs/PIPELINE.md"].GetProperty("status").GetString());
+    }
+
+    [Fact]
     public async Task Download_returns_a_zip_and_records_the_run()
     {
         var c = _f.As("dan");

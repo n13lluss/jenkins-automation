@@ -88,6 +88,13 @@ export type EnvironmentMetrics = {
   daily: { day: string; successes: number; failures: number }[];
 };
 export type MetricsResponse = { days: number; environments: EnvironmentMetrics[] };
+export type FileDrift = {
+  path: string;
+  status: "missing" | "identical" | "changed" | "customised" | "unavailable";
+  repositoryVersion?: string | null;
+  diff?: string | null;
+  note?: string | null;
+};
 export type IngestToken = { id: string; prefix: string; createdAt: string; lastUsedAt?: string | null; revokedAt?: string | null };
 
 export type NotifyEvent = "failure" | "fixed" | "approval" | "productionDeployed";

@@ -111,6 +111,8 @@ public static class PipelineGenerator
         var paths = files.Select(f => f.Path).Append("docs/PIPELINE.md").ToList();
         Add("docs/PIPELINE.md", DocsWriter.Pipeline(ctx, paths));
 
+        files = files.Select(f => f with { Content = Drift.VersionMarker.Apply(f.Path, f.Content) }).ToList();
+
         if (onlyFiles is { Count: > 0 })
         {
             var wanted = onlyFiles.ToHashSet(StringComparer.Ordinal);

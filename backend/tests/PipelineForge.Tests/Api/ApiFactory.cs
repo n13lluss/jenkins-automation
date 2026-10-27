@@ -20,11 +20,14 @@ public sealed class FakeGitHub : PipelineForge.Core.Scm.ISourceControlProvider
     public readonly List<(string Repository, string Branch, string From)> Branches = [];
     public readonly List<(string Repository, IReadOnlyList<PipelineForge.Core.Scm.FileChange> Files)> Commits = [];
     public readonly List<PipelineForge.Core.Scm.PullRequestRequest> PullRequests = [];
+    /// <summary>Repository files by (repository, branch, path).</summary>
+    public readonly System.Collections.Concurrent.ConcurrentDictionary<(string, string, string), string> Files = new();
     public PipelineForge.Core.Scm.ScmKind Kind => PipelineForge.Core.Scm.ScmKind.GitHub;
     public Task<IReadOnlyList<PipelineForge.Core.Scm.ScmRepository>> ListRepositoriesAsync(PipelineForge.Core.Scm.ScmConnectionInfo conn, string? query, CancellationToken ct) => Task.FromResult<IReadOnlyList<PipelineForge.Core.Scm.ScmRepository>>([]);
     public Task<IReadOnlyList<PipelineForge.Core.Scm.ScmBranch>> ListBranchesAsync(PipelineForge.Core.Scm.ScmConnectionInfo conn, string repository, CancellationToken ct) => Task.FromResult<IReadOnlyList<PipelineForge.Core.Scm.ScmBranch>>([]);
     public Task<IReadOnlyList<string>> ListFilesAsync(PipelineForge.Core.Scm.ScmConnectionInfo conn, string repository, string branch, CancellationToken ct) => Task.FromResult<IReadOnlyList<string>>([]);
-    public Task<string?> GetFileAsync(PipelineForge.Core.Scm.ScmConnectionInfo conn, string repository, string branch, string path, int maxBytes, CancellationToken ct) => Task.FromResult<string?>(null);
+    public Task<string?> GetFileAsync(PipelineForge.Core.Scm.ScmConnectionInfo conn, string repository, string branch, string path, int maxBytes, CancellationToken ct) =>
+        Task.FromResult(Files.TryGetValue((repository, branch, path), out var content) ? content : null);
     public Task CreateBranchAsync(PipelineForge.Core.Scm.ScmConnectionInfo conn, string repository, string newBranch, string fromBranch, CancellationToken ct)
     {
         lock (Branches) Branches.Add((repository, newBranch, fromBranch));

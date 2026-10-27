@@ -230,7 +230,7 @@ export function PipelineEditor({ ws, initial, project, source, link, profile, in
           {step === "review" && (
             <Review preview={preview} selected={selected} setSelected={setSelected} onJump={(path) => setStep(STEPS.find((s) => s.prefixes.some((p) => path.startsWith(p)))?.id ?? "project")}>
               {project ? (
-                <ActionsPanel ws={ws} project={project} dirty={dirty} selected={selected} canEdit={!readOnly} admin={isAdmin(workspace)} valid={!!preview?.success} />
+                <ActionsPanel ws={ws} project={project} dirty={dirty} selected={selected} canEdit={!readOnly} admin={isAdmin(workspace)} valid={!!preview?.success} onSelect={(paths) => setSelected(new Set(paths))} />
               ) : (
                 <Alert title="Save the pipeline to download it, open a pull request or create the Jenkins job." />
               )}
