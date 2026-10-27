@@ -24,9 +24,15 @@ public static class DocsWriter
         };
         plugins.Add(ctx.IsKubernetes ? "kubernetes (pod agents)" : "docker-workflow (Docker agents)");
         if (!ctx.IsKubernetes) plugins.Add("ws-cleanup");
+        if (ctx.Library) plugins.Add("pipeline-groovy-lib (shared libraries)");
+        var n = c.Notifications;
+        if (ctx.Notifications && n.Slack.Enabled) plugins.Add("slack (Slack Notification; configure the workspace under Manage Jenkins → System)");
+        if (ctx.Notifications && n.Teams.Enabled) plugins.Add("http_request (Teams Workflows webhook)");
+        if (ctx.Notifications && n.Email.Enabled) plugins.Add("email-ext (Email Extension; configure SMTP under Manage Jenkins → System)");
         if (c.Quality.Enabled) plugins.Add("sonar (SonarQube Scanner for Jenkins)");
         if (ctx.DeployEnvironments.Any(e => e.Deploy.Type == DeployTargetType.DockerSsh)) plugins.Add("ssh-agent");
         if (ctx.DeployEnvironments.Any(e => e.Deploy.Type == DeployTargetType.AzureAppService)) plugins.Add("azure-credentials");
+        if (ctx.Ticketing) plugins.Add("jira-steps (Jira Pipeline Steps; configure the site under Manage Jenkins → System)");
         return plugins;
     }
 
@@ -41,10 +47,31 @@ public static class DocsWriter
         if (c.Registry is { } reg && ctx.ImageModules.Count > 0) Add(reg.CredentialId, "Username with password", $"Push images to {reg.Host}");
         if (c.Security.DependencyScanners.Contains(DependencyScanner.OwaspDependencyCheck)) Add(c.Security.NvdApiKeyCredentialId, "Secret text", "NVD API key for OWASP Dependency-Check");
         if (c.Security.DependencyScanners.Contains(DependencyScanner.Snyk)) Add(c.Security.SnykCredentialId, "Secret text", "Snyk API token");
+        if (ctx.Metrics)
+            Add(c.Metrics.TokenCredentialId, "Secret text", "PipelineForge ingest token (pipeline → Actions → Delivery metrics)");
+        if (ctx.Notifications && c.Notifications.Teams.Enabled)
+            Add(c.Notifications.Teams.WebhookCredentialId, "Secret text", "Teams Workflows webhook URL (treat it as a secret)");
+        if (ctx.Notifications && c.Notifications.Slack is { Enabled: true, TokenCredentialId: { } slackToken })
+            Add(slackToken, "Secret text", "Slack bot token");
         if (c.AiReview.Enabled) Add(c.AiReview.CredentialId, "Secret text", $"API key for the AI review ({c.AiReview.Provider})");
+        if (ctx.UsesSnyk || ctx.SnykMonitor) Add(c.Security.SnykCredentialId, "Secret text", "Snyk API token");
+        if (c.DependencyProxy is { } proxy) Add(proxy.CredentialId, "Username with password", $"Read access to the {proxy.Type} repository manager");
+        if (ctx.Signing)
+        {
+            Add(c.Signing.KeyCredentialId, "Secret file", "cosign.key from `cosign generate-key-pair`");
+            Add(c.Signing.PasswordCredentialId, "Secret text", "Password of cosign.key");
+        }
+        if (ctx.Authenticated)
+        {
+            var a = c.Security.Dast.Authenticated;
+            Add(a.UserCredentialId, "Username with password", $"Low-privileged test account on {a.Environment} (never a real user)");
+            Add(a.AdminCredentialId, "Username with password", $"Admin test account on {a.Environment}");
+        }
         foreach (var e in ctx.DeployEnvironments)
         {
             var d = e.Deploy;
+            if (ctx.Migrations && e.Database is { } db)
+                Add(db.CredentialId, "Username with password", $"Database migration user for {e.DisplayName}");
             switch (d.Type)
             {
                 case DeployTargetType.Helm:
@@ -71,7 +98,22 @@ public static class DocsWriter
 
         sb.AppendLine("## Files").AppendLine();
         sb.AppendLine("| File | Purpose |").AppendLine("|---|---|");
-        foreach (var f in files) sb.AppendLine($"| `{f}` | {Describe(f)} |");
+        foreach (var f in files) sb.AppendLine($"| `{f}` | {Describe(ctx, f)} |");
+        sb.AppendLine();
+
+        sb.AppendLine("## Where the pipeline lives").AppendLine();
+        if (ctx.Library)
+        {
+            sb.AppendLine($"Shared library layout. The application repository only holds a thin `Jenkinsfile` that calls `{ctx.LibraryVar}()` from the library `{c.Library.Name}`. "
+                + "Everything under `library/` goes into the library repository; see `library/README.md` for the Jenkins setup. "
+                + "Each stage writes the library's copies of the scripts, environments and scan settings over the workspace, so a branch or pull request cannot change what runs.");
+        }
+        else
+        {
+            sb.AppendLine("> **Warning:** in-repository layout. The Jenkinsfile, stage scripts and `jenkins/config/environments.yaml` live in the application repository, "
+                + "so anyone who can push a branch can change what the pipeline does with its credentials. Use the shared library layout for production pipelines, "
+                + "and only build fork pull requests from trusted contributors.");
+        }
         sb.AppendLine();
 
         sb.AppendLine("## Branches and environments").AppendLine();
@@ -86,7 +128,13 @@ public static class DocsWriter
 
         sb.AppendLine("## Stages").AppendLine();
         var s = c.Security;
-        if (s.SecretScan) sb.AppendLine("- **Secret scan**: Gitleaks over the git history, redacted SARIF report.");
+        if (c.Triggers.Checks == StageTrigger.PullRequests) sb.AppendLine("- Analysis and security checks run on pull requests; feature branches without a PR only build and test.");
+        if (c.Triggers.Package == StageTrigger.DeployBranches) sb.AppendLine("- Packaging (image, image scan, ephemeral DAST) runs only on deploy branches, i.e. after a merge.");
+        if (ctx.Pinning) sb.AppendLine("- **Dependency pinning**: Maven Enforcer fails on LATEST/RELEASE, version ranges and unpinned plugins. Add `security/maven-enforcer.xml` to your `pom.xml`.");
+        if (c.DependencyProxy is { } px) sb.AppendLine($"- **Dependency proxy**: every build resolves through {px.Type} at `{px.BaseUrl}`, never straight from public registries.");
+        if (s.SecretScan) sb.AppendLine(s.SecretScanScope == SecretScanScope.Diff
+            ? "- **Secret scan**: Gitleaks over the commits of this change (the whole history when the base is unknown), redacted SARIF report."
+            : "- **Secret scan**: Gitleaks over the git history, redacted SARIF report.");
         sb.AppendLine($"- **Build & test**: {string.Join(", ", c.Modules.Select(m => $"`{m.Name}` ({m.Ecosystem})"))}{(c.Modules.Count > 1 ? ", in parallel" : "")}.");
         if (c.Quality.Enabled) sb.AppendLine($"- **{c.Quality.Platform} analysis**{(c.Quality.WaitForQualityGate ? " and **quality gate**" : "")}: project `{c.Quality.ProjectKey}` on the Jenkins installation `{c.Quality.ServerName}`.");
         if (s.DependencyScanners.Count > 0) sb.AppendLine($"- **Dependency scan**: {string.Join(", ", s.DependencyScanners)}; fails on {s.FailOnSeverity} or higher after all scanners ran.");
@@ -98,11 +146,33 @@ public static class DocsWriter
         if (ctx.ImageModules.Count > 0)
         {
             sb.AppendLine($"- **Build image**: {(ctx.IsKubernetes ? "Kaniko (no Docker daemon)" : "Docker")} builds to a tarball; nothing is pushed yet.");
-            if (s.ContainerScan) sb.AppendLine("- **Container scan**: Trivy scans the tarball before it is pushed.");
-            if (ctx.DeployEnvironments.Count > 0) sb.AppendLine("- **Push image**: only on deploy branches, tagged `<branch>-<build>-<commit>`.");
+            if (s.ContainerScan) sb.AppendLine($"- **Container scan**: {s.ContainerScanner} scans the tarball before it is pushed.");
+            if (ctx.Ephemeral) sb.AppendLine($"- **Ephemeral DAST**: starts the image built in this run {(ctx.IsKubernetes ? "in a short-lived pod" : "on the agent (isolated network)")}, waits for `{c.Security.Dast.Ephemeral.HealthPath}` and runs a passive ZAP baseline against it.");
+            if (ctx.DeployEnvironments.Count > 0) sb.AppendLine("- **Push image**: only on deploy branches, tagged `<branch>-<build>-<commit>`; the digest is recorded in `reports/image-digests/`.");
+            if (ctx.Signing) sb.AppendLine("- **Sign image**: Cosign signs the pushed digest" + (ctx.Attestations ? " and attaches signed attestations (image SBOM, SLSA provenance)" : "") + ". Every deploy first verifies " + (ctx.Attestations ? "signature and attestations" : "the signature") + " with `" + c.Signing.PublicKeyPath + "`.");
+            if (ctx.DockerfileLint) sb.AppendLine("- **Dockerfile lint**: Hadolint (`security/.hadolint.yaml`) fails on root as the last user, untagged or `latest` base images" + (c.Security.AllowedBaseRegistries.Count > 0 ? ", base images outside " + string.Join(", ", c.Security.AllowedBaseRegistries) : "") + "; every Dockerfile needs a `USER`.");
         }
+        sb.AppendLine("- Every deploy uses the image digest, never a mutable tag.");
+        foreach (var e in ctx.DeployEnvironments.Where(e => e.PromoteFrom is not null))
+            sb.AppendLine($"- **Promotion**: {e.DisplayName} does not rebuild; it deploys the digest running in `{e.PromoteFrom}` (registry tag `pf-env-{e.PromoteFrom}`).");
         foreach (var e in ctx.DeployEnvironments)
-            sb.AppendLine($"- **Deploy {e.DisplayName}**{(e.RequiresApproval ? " (after approval)" : "")}: {SupportFilesWriter.TypeKey(e.Deploy.Type)}{(e.Url is not null ? ", then a smoke test" : "")}.");
+            sb.AppendLine($"- **Deploy {e.DisplayName}**{(e.RequiresApproval ? " (after approval)" : "")}: {SupportFilesWriter.TypeKey(e.Deploy.Type)}{(e.Url is not null ? ", then a smoke test" : "")}{(ctx.SnykMonitor ? ", then `snyk monitor` registers what was deployed" : "")}.");
+        if (ctx.RateLimit) sb.AppendLine($"- **Rate-limit check** ({string.Join(", ", c.RateLimit.Environments)}): {c.RateLimit.Attempts} failed logins as `{c.RateLimit.TestUsername}` must produce HTTP {string.Join(" or ", c.RateLimit.ExpectedStatuses)}.");
+        if (ctx.Authenticated)
+        {
+            var a = c.Security.Dast.Authenticated;
+            sb.AppendLine($"- **Authenticated scan** ({a.Environment}): logs in as zap-user and zap-admin. It fails when the user role reaches an admin-only path (`security/zap/admin-paths.txt`), when logout leaves the session valid, on session fixation or weak tokens, and on high-risk ZAP findings.{(a.BeforeProduction ? " Also runs before the production approval." : "")}");
+        }
+        if (ctx.Scheduled)
+        {
+            var sch = c.Security.Dast.Schedule;
+            sb.AppendLine($"- **Scheduled scans** (`Jenkinsfile.scheduled`, `{sch.BaselineCron}`): passive ZAP baseline against {sch.Environment}{(sch.AuthenticatedDaily && ctx.Authenticated ? "; the first run each day also runs the authenticated scan" : "")}.");
+        }
+        if (ctx.Ticketing)
+        {
+            var t = c.Ticketing;
+            sb.AppendLine($"- **Tickets**: findings at or above {t.MinSeverity} from {string.Join(", ", t.Sources)} become Jira issues in `{t.ProjectKey}` (at most {t.MaxPerBuild} per build). A label `pf-<fingerprint>` prevents duplicates while the issue is open.{(t.PullRequests ? "" : " Pull request builds do not file tickets.")}");
+        }
         sb.AppendLine();
 
         sb.AppendLine("## Jenkins setup").AppendLine();
@@ -123,6 +193,55 @@ public static class DocsWriter
         if (c.Quality.Enabled)
             sb.AppendLine($"Configure the SonarQube installation `{c.Quality.ServerName}` under *Manage Jenkins → System* with its token, and a webhook from Sonar back to `<jenkins>/sonarqube-webhook/` so the quality gate can report.").AppendLine();
 
+        if (c.Quality.Enabled)
+            sb.AppendLine("Use a Sonar quality profile with the injection rules (SQL, OS command, XXE, LDAP, path) activated at Blocker/Critical severity, and a quality gate that fails on new critical issues, so the gate blocks merges on injection findings.").AppendLine();
+        if (ctx.Signing)
+        {
+            sb.AppendLine("### Image signing").AppendLine();
+            sb.AppendLine($"Run `cosign generate-key-pair` once. Commit `cosign.pub` as `{c.Signing.PublicKeyPath}`; store `cosign.key` and its password as the credentials above. Deploys refuse images whose signature does not verify.").AppendLine();
+        }
+        if (ctx.ClusterPolicy)
+        {
+            sb.AppendLine("### Cluster admission policy").AppendLine();
+            sb.AppendLine("Install Kyverno, create the key secret (`kubectl -n kyverno create secret generic pipelineforge-cosign-pub --from-file=cosign.pub`) and apply `deploy/policies/kyverno-policies.yaml`. The cluster then refuses unsigned images in the deploy namespaces, even when someone deploys by hand.").AppendLine();
+        }
+        sb.AppendLine("### Deploy safety").AppendLine();
+        sb.AppendLine("After each deploy the pipeline polls the environment URL plus its health path until it gets the expected status several times in a row. "
+            + "When the deploy or the health check fails and rollback is on, the previous release is restored (Helm `rollback`, the previous compose file and `.env` on the Docker host, "
+            + "a slot swap back or the recorded image on Azure) and the build still fails.").AppendLine();
+        if (ctx.Migrations)
+            sb.AppendLine($"Database migrations ({c.Migrations.Tool}, `{c.Migrations.Path}`) run before each deploy that has a database. They are not rolled back: write backwards-compatible (expand/contract) migrations. The agent needs network access to the database.").AppendLine();
+        else if (c.Migrations.Tool == MigrationTool.InApp)
+            sb.AppendLine("Database migrations run inside the application at start-up (e.g. Spring Boot with Flyway). They are not rolled back with the release: keep them backwards compatible.").AppendLine();
+        if (ctx.DeployEnvironments.Any(e => e.AppSecrets is not null))
+            sb.AppendLine("Application secrets come from External Secrets Operator: install it and create the referenced (Cluster)SecretStore. The chart's `ExternalSecret` copies the listed keys into a Secret that the pods load with `envFrom`; secret values never pass through Jenkins.").AppendLine();
+        if (ctx.DeployEnvironments.Any(e => e.Deploy.Type == DeployTargetType.DockerSsh))
+            sb.AppendLine("Docker hosts: keep application secrets in an `env_file` on the host (owned by the deploy user, mode 600), not in the repository.").AppendLine();
+        if (ctx.DeployEnvironments.Any(e => e.Deploy.Type == DeployTargetType.AzureAppService))
+            sb.AppendLine("Azure App Service: reference secrets from Key Vault in the app settings (`@Microsoft.KeyVault(...)`) with the app's managed identity.").AppendLine();
+        if (ctx.Metrics)
+        {
+            sb.AppendLine("### Delivery metrics").AppendLine();
+            sb.AppendLine($"Every deploy, successful or not, is reported to `{c.Metrics.Url}` with the environment, image digest, commit and timings (no secrets, no code). "
+                + "Create the ingest token in PipelineForge (pipeline → Actions → Delivery metrics) and store it as the credential above. A failed report never fails the deploy.").AppendLine();
+        }
+        if (ctx.Exceptions)
+        {
+            sb.AppendLine("### Accepted risks").AppendLine();
+            sb.AppendLine($"`security/exceptions.yaml` is the only place to accept a finding. Each entry needs an owner, a ticket and an expiry at most {ExceptionsWriter.MaxDays} days ahead; "
+                + "the *Exception review* stage fails the build when one expires or is incomplete, and renders `.trivyignore`, `.gitleaksignore`, the Dependency-Check suppressions, the Snyk policy and the ZAP rule overrides from it. "
+                + "Do not edit those files by hand. Add the register to CODEOWNERS so the security team reviews every change; `reports/exceptions.md` lists what is accepted in each build.").AppendLine();
+        }
+        sb.AppendLine("### Block merges on failed checks").AppendLine();
+        sb.AppendLine("Checks only block a merge when Bitbucket or GitHub requires the Jenkins build. Use \"Require the Jenkins build before merge\" in PipelineForge, or set branch protection / merge checks by hand for " + string.Join(", ", c.Environments.Select(e => $"`{e.BranchPattern}`").Distinct()) + ".").AppendLine();
+        if (ctx.Scheduled)
+        {
+            sb.AppendLine("### Scheduled job").AppendLine();
+            sb.AppendLine("Create a second Multibranch Pipeline for the same repository with script path `Jenkinsfile.scheduled` (PipelineForge can create it). The cron trigger is only active on the branch of the scanned environment.").AppendLine();
+        }
+        if (ctx.UsesSnyk || ctx.SnykMonitor)
+            sb.AppendLine("Snyk can open Jira tickets itself: enable the Jira integration in Snyk (Settings → Integrations → Jira) with the same severity threshold.").AppendLine();
+
         sb.AppendLine("## Notes").AppendLine();
         sb.AppendLine("- Tool images are pinned in `jenkins/agents/*.yaml`" + (ctx.IsKubernetes ? "" : " and `jenkins/stages/common.groovy`") + "; update them regularly.");
         sb.AppendLine("- Shell steps never interpolate values in Groovy; settings reach the shell as environment variables.");
@@ -137,7 +256,28 @@ public static class DocsWriter
             sb.AppendLine("- App Service pulls images with its managed identity (AcrPull) or configured registry credentials.");
         if (c.CustomStages.Count > 0)
             sb.AppendLine("- Custom stages are inserted verbatim and are not checked by PipelineForge.");
+        if (ctx.Ephemeral && c.Security.Dast.Ephemeral.AppEnvironment.Count == 0)
+            sb.AppendLine("- The ephemeral scan starts the image without a database or other services. Give the app a profile that starts standalone (e.g. `SPRING_PROFILES_ACTIVE=dast` with an in-memory database).");
+        if (ctx.Proxy is not null && c.Modules.Any(m => m.Ecosystem == Ecosystem.Go))
+            sb.AppendLine("- Go: the checksum database (sum.golang.org) is still consulted; proxy it in the repository manager or set GOSUMDB accordingly.");
         return sb.ToString();
+    }
+
+    private static string Describe(GenerationContext ctx, string path)
+    {
+        if (!path.StartsWith(LibraryWriter.Prefix, StringComparison.Ordinal))
+            return path == "Jenkinsfile" && ctx.Library ? $"Thin Jenkinsfile: loads the library and calls {ctx.LibraryVar}()" : Describe(path);
+        var inner = path[LibraryWriter.Prefix.Length..];
+        var resources = $"resources/{ctx.ResourceRoot}/";
+        return inner switch
+        {
+            _ when inner == $"vars/{ctx.LibraryVar}.groovy" => "Library: the declarative pipeline",
+            _ when inner == $"vars/{ctx.LibraryVar}Scheduled.groovy" => "Library: the scheduled scan pipeline",
+            _ when inner == $"vars/{ctx.LibraryVar}Files.groovy" => "Library: writes the support files into each workspace",
+            "README.md" => "Library: repository layout and Jenkins setup",
+            _ when inner.StartsWith(resources, StringComparison.Ordinal) => "Library: " + Describe(inner[resources.Length..]),
+            _ => "Library file",
+        };
     }
 
     private static string Describe(string path) => path switch
@@ -161,6 +301,22 @@ public static class DocsWriter
         "security/zap-rules.tsv" => "ZAP rule levels",
         "docs/PIPELINE.md" => "This document",
         "docs/iso27001-evidence.md" => "ISO 27001 control mapping",
+        "Jenkinsfile.scheduled" => "Scheduled scans of a live environment (second job)",
+        "jenkins/stages/tickets.groovy" => "Deduplicated tickets for findings",
+        "jenkins/scripts/collect_findings.py" => "Normalises reports into tickets",
+        "jenkins/scripts/access_control_check.py" => "Two-role access-control and session checks",
+        "jenkins/scripts/rate_limit_check.py" => "Login throttling / lockout check",
+        "security/zap/auth-plan.yaml" => "ZAP Automation Framework plan for the authenticated scan",
+        "security/zap/admin-paths.txt" => "Admin-only paths the user role must not reach",
+        "security/maven-enforcer.xml" => "Maven Enforcer plugin snippet for pom.xml",
+        "security/.hadolint.yaml" => "Hadolint rules and trusted base registries",
+        "jenkins/scripts/provenance.py" => "SLSA build provenance for attestations",
+        "security/exceptions.yaml" => "Accepted risks with owner, ticket and expiry; ignore files are rendered from it",
+        "jenkins/scripts/exceptions.py" => "Checks the exception register and renders the scanners' ignore files",
+        "deploy/helm/chart/templates/externalsecret.yaml" => "External Secrets: application secrets from the secret store",
+        "deploy/policies/kyverno-policies.yaml" => "Kyverno admission policies (signed images, no :latest, non-root)",
+        "jenkins/config/maven-settings.xml" => "Maven mirror to the repository manager",
+        "jenkins/config/proxy.init.gradle" => "Gradle repositories through the repository manager",
         _ when path.StartsWith("deploy/helm/values-") => "Helm values per environment",
         _ when path.StartsWith("deploy/helm/chart/") => "Minimal Helm chart",
         _ when path.StartsWith("deploy/docker/") => "Docker Compose file per environment",
@@ -193,6 +349,11 @@ public static class DocsWriter
         if (ctx.HasDast) sb.AppendLine("| DAST | `reports/zap-<env>.html` / `.json` |");
         if (c.Quality.Enabled) sb.AppendLine($"| Static analysis | {c.Quality.Platform} project `{c.Quality.ProjectKey}` |");
         if (c.AiReview.Enabled) sb.AppendLine("| AI review | `reports/ai-review.md` / `.sarif` |");
+        if (ctx.Signing) sb.AppendLine("| Image signature | `reports/image-digests/` + Cosign signature in the registry |");
+        if (ctx.Ephemeral) sb.AppendLine("| Ephemeral DAST | `reports/zap-ephemeral.*` |");
+        if (ctx.Authenticated) sb.AppendLine("| Access control | `reports/access-control-<env>.json`, `reports/zap-auth-<env>.*` |");
+        if (ctx.RateLimit) sb.AppendLine("| Login rate limit | `reports/rate-limit-<env>.json` |");
+        if (ctx.Ticketing) sb.AppendLine("| Finding follow-up | Jira issues labelled `pipelineforge` |");
         sb.AppendLine("| Approvals | Jenkins build log of the `Approve …` stage (approver and time) |");
         return sb.ToString();
     }

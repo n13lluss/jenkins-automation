@@ -1,0 +1,2 @@
+# Test fixture for the secret redactor (fake AWS key in RedactorTests, commit history); not a real credential.
+57c6f195da22b81ea01d08040c4c73cb28b1ecc0:backend/tests/PipelineForge.Tests/Core/PresetAndRedactorTests.cs:aws-access-token:40

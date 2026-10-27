@@ -1,0 +1,26 @@
+# End-to-end stack: registry, SSH deploy target and Jenkins. Started by e2e/run.sh.
+# Jenkins and the target use the host Docker daemon; the workspace path is identical on both sides.
+name: pf-e2e
+services:
+  registry:
+    image: registry:2.8.3
+    ports: ["5000:5000"]
+
+  deploy-target:
+    build: ./deploy-target
+    group_add: ["${DOCKER_GID:?}"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${E2E_SECRETS:?}:/run/e2e:ro
+
+  jenkins:
+    build: ./jenkins
+    environment:
+      JENKINS_HOME: ${E2E_HOME:?}
+    group_add: ["${DOCKER_GID:?}"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${E2E_HOME}:${E2E_HOME}
+      - ${E2E_SECRETS}:/run/e2e:ro
+      - ${E2E_REPO:?}:/e2e-repo:ro
+    ports: ["127.0.0.1:8090:8080"]

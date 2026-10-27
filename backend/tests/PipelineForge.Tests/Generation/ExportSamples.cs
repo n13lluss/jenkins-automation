@@ -10,7 +10,22 @@ public class ExportSamples
     {
         var dir = Environment.GetEnvironmentVariable("PF_SAMPLES_DIR");
         if (string.IsNullOrEmpty(dir)) return;
-        foreach (var (name, config) in new[] { ("maven-helm-k8s", Samples.MavenHelm()), ("monorepo-docker-iso", Samples.Monorepo()) })
+        foreach (var (name, config) in new[]
+                 {
+                     ("maven-helm-k8s", Samples.MavenHelm()),
+                     ("monorepo-docker-iso", Samples.Monorepo()),
+                     ("secure-java-k8s", WorkflowCoverageTests.SecureJava()),
+                     ("secure-java-docker", WorkflowCoverageTests.SecureJava(PipelineForge.Core.Model.AgentType.Docker)),
+                     ("promote-k8s", SupplyChainTests.Promoting()),
+                     ("promote-docker", SupplyChainTests.Promoting(PipelineForge.Core.Model.AgentType.Docker)),
+                     ("library-k8s", SharedLibraryTests.Library()),
+                     ("library-docker", SharedLibraryTests.Library(PipelineForge.Core.Model.AgentType.Docker)),
+                     ("safe-k8s-flyway", DeploySafetyTests.Safe()),
+                     ("exceptions-docker", ExceptionRegisterTests.Register(PipelineForge.Core.Model.AgentType.Docker)),
+                     ("notify-k8s", NotificationTests.Notifying()),
+                     ("notify-library-docker", NotificationTests.Notifying(PipelineForge.Core.Model.AgentType.Docker, PipelineForge.Core.Model.PipelineLayout.SharedLibrary)),
+                     ("safe-docker-liquibase", DeploySafetyTests.Safe(PipelineForge.Core.Model.AgentType.Docker, PipelineForge.Core.Model.MigrationTool.Liquibase)),
+                 })
         {
             var result = PipelineGenerator.Generate(config);
             Assert.True(result.Success);

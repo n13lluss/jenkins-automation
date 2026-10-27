@@ -14,6 +14,40 @@ using PipelineForge.Infrastructure.Secrets;
 
 namespace PipelineForge.Tests.Api;
 
+/// <summary>Stands in for GitHub: records commits and pull requests instead of calling the API.</summary>
+public sealed class FakeGitHub : PipelineForge.Core.Scm.ISourceControlProvider
+{
+    public readonly List<(string Repository, string Branch, string From)> Branches = [];
+    public readonly List<(string Repository, IReadOnlyList<PipelineForge.Core.Scm.FileChange> Files)> Commits = [];
+    public readonly List<PipelineForge.Core.Scm.PullRequestRequest> PullRequests = [];
+    /// <summary>Repository files by (repository, branch, path).</summary>
+    public readonly System.Collections.Concurrent.ConcurrentDictionary<(string, string, string), string> Files = new();
+    public PipelineForge.Core.Scm.ScmKind Kind => PipelineForge.Core.Scm.ScmKind.GitHub;
+    public Task<IReadOnlyList<PipelineForge.Core.Scm.ScmRepository>> ListRepositoriesAsync(PipelineForge.Core.Scm.ScmConnectionInfo conn, string? query, CancellationToken ct) => Task.FromResult<IReadOnlyList<PipelineForge.Core.Scm.ScmRepository>>([]);
+    public Task<IReadOnlyList<PipelineForge.Core.Scm.ScmBranch>> ListBranchesAsync(PipelineForge.Core.Scm.ScmConnectionInfo conn, string repository, CancellationToken ct) => Task.FromResult<IReadOnlyList<PipelineForge.Core.Scm.ScmBranch>>([]);
+    public Task<IReadOnlyList<string>> ListFilesAsync(PipelineForge.Core.Scm.ScmConnectionInfo conn, string repository, string branch, CancellationToken ct) => Task.FromResult<IReadOnlyList<string>>([]);
+    public Task<string?> GetFileAsync(PipelineForge.Core.Scm.ScmConnectionInfo conn, string repository, string branch, string path, int maxBytes, CancellationToken ct) =>
+        Task.FromResult(Files.TryGetValue((repository, branch, path), out var content) ? content : null);
+    public Task CreateBranchAsync(PipelineForge.Core.Scm.ScmConnectionInfo conn, string repository, string newBranch, string fromBranch, CancellationToken ct)
+    {
+        lock (Branches) Branches.Add((repository, newBranch, fromBranch));
+        return Task.CompletedTask;
+    }
+    public Task CommitFilesAsync(PipelineForge.Core.Scm.ScmConnectionInfo conn, string repository, string branch, string message, IReadOnlyList<PipelineForge.Core.Scm.FileChange> files, CancellationToken ct)
+    {
+        lock (Commits) Commits.Add((repository, files));
+        return Task.CompletedTask;
+    }
+    public Task<PipelineForge.Core.Scm.PullRequestResult> CreatePullRequestAsync(PipelineForge.Core.Scm.ScmConnectionInfo conn, PipelineForge.Core.Scm.PullRequestRequest request, CancellationToken ct)
+    {
+        lock (PullRequests) PullRequests.Add(request);
+        return Task.FromResult(new PipelineForge.Core.Scm.PullRequestResult($"https://github.com/{request.Repository}/pull/1", "1"));
+    }
+    public Task<IReadOnlyList<PipelineForge.Core.Scm.BranchRuleResult>> RequireBuildsAsync(PipelineForge.Core.Scm.ScmConnectionInfo conn, string repository, IReadOnlyList<string> branches, int approvals, CancellationToken ct) =>
+        Task.FromResult<IReadOnlyList<PipelineForge.Core.Scm.BranchRuleResult>>(branches.Select(b => new PipelineForge.Core.Scm.BranchRuleResult(b, "test", true, "Applied.")).ToList());
+    public Task<string> WhoAmIAsync(PipelineForge.Core.Scm.ScmConnectionInfo conn, CancellationToken ct) => Task.FromResult("fake");
+}
+
 public sealed class MemorySecretStore : ISecretStore
 {
     public readonly Dictionary<string, string> Values = [];
@@ -48,6 +82,7 @@ public sealed class TestAuthHandler(IOptionsMonitor<AuthenticationSchemeOptions>
 public sealed class ApiFactory : WebApplicationFactory<Program>
 {
     public MemorySecretStore Secrets { get; } = new();
+    public FakeGitHub GitHub { get; } = new();
     private readonly string _db = Guid.NewGuid().ToString();
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -58,6 +93,8 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
         {
             services.AddDbContext<AppDbContext>(o => o.UseInMemoryDatabase(_db));
             services.AddSingleton<ISecretStore>(Secrets);
+            // ScmProviders picks the first provider of a kind, so this replaces the real GitHub client.
+            services.Insert(0, ServiceDescriptor.Singleton<PipelineForge.Core.Scm.ISourceControlProvider>(GitHub));
             services.AddAuthentication("Test").AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", _ => { });
             services.PostConfigure<AuthenticationOptions>(o =>
             {

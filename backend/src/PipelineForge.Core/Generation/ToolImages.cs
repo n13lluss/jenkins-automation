@@ -15,6 +15,9 @@ public static class ToolImages
         ["dependency-check"] = "owasp/dependency-check:12.1.8",
         ["osv-scanner"] = "ghcr.io/google/osv-scanner:v2.2.4",
         ["snyk"] = "snyk/snyk:linux",
+        ["snyk-maven"] = "snyk/snyk:maven-3-jdk-21",
+        ["cosign"] = "gcr.io/projectsigstore/cosign:v2.6.1-dev",
+        ["hadolint"] = "hadolint/hadolint:v2.12.0-debian",
         ["sonar-scanner"] = "sonarsource/sonar-scanner-cli:11.5",
         ["zap"] = "ghcr.io/zaproxy/zaproxy:2.16.1",
         ["kaniko"] = "gcr.io/kaniko-project/executor:v1.24.0-debug",
@@ -24,6 +27,8 @@ public static class ToolImages
         ["ssh"] = "alpine:3.22",
         ["curl"] = "curlimages/curl:8.16.0",
         ["python"] = "python:3.13-slim",
+        ["flyway"] = "flyway/flyway:10.22.0-alpine",
+        ["liquibase"] = "liquibase/liquibase:4.30.0",
     };
 
     public static string DefaultVersion(Ecosystem e) => e switch

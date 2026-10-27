@@ -13,6 +13,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<PipelineProject> Projects => Set<PipelineProject>();
     public DbSet<GenerationRun> GenerationRuns => Set<GenerationRun>();
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
+    public DbSet<IngestToken> IngestTokens => Set<IngestToken>();
+    public DbSet<DeploymentEvent> DeploymentEvents => Set<DeploymentEvent>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -58,6 +60,23 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         {
             e.HasIndex(x => new { x.WorkspaceId, x.ProjectId });
             e.HasOne<PipelineProject>().WithMany().HasForeignKey(x => x.ProjectId).OnDelete(DeleteBehavior.Cascade);
+        });
+        b.Entity<IngestToken>(e =>
+        {
+            e.HasIndex(x => x.Sha256).IsUnique();
+            e.HasIndex(x => new { x.WorkspaceId, x.ProjectId });
+            e.HasOne<PipelineProject>().WithMany().HasForeignKey(x => x.ProjectId).OnDelete(DeleteBehavior.Cascade);
+            e.Property(x => x.Prefix).HasMaxLength(16);
+            e.Property(x => x.Sha256).HasMaxLength(64);
+        });
+        b.Entity<DeploymentEvent>(e =>
+        {
+            e.HasIndex(x => new { x.ProjectId, x.Environment, x.FinishedAt });
+            e.HasOne<PipelineProject>().WithMany().HasForeignKey(x => x.ProjectId).OnDelete(DeleteBehavior.Cascade);
+            e.Property(x => x.Environment).HasMaxLength(16);
+            e.Property(x => x.Digest).HasMaxLength(71);
+            e.Property(x => x.Commit).HasMaxLength(64);
+            e.Property(x => x.BuildUrl).HasMaxLength(2048);
         });
         b.Entity<AuditEvent>(e =>
         {

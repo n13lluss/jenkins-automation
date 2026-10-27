@@ -47,6 +47,7 @@ export function AppShell({ workspaceId, children }: { workspaceId?: string; chil
         { href: `/w/${workspaceId}`, label: "Pipelines" },
         { href: `/w/${workspaceId}/connections`, label: "Connections" },
         { href: `/w/${workspaceId}/presets`, label: "Presets" },
+        { href: `/w/${workspaceId}/metrics`, label: "Metrics" },
         ...(isAdmin(ws) ? [{ href: `/w/${workspaceId}/audit`, label: "Audit log" }, { href: `/w/${workspaceId}/settings`, label: "Settings" }] : []),
       ]
     : [];

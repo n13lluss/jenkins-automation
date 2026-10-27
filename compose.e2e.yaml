@@ -1,0 +1,6 @@
+# Override for the UI end-to-end test: the demo users skip TOTP enrolment so Playwright can sign in.
+# The realm file is written by e2e/ui.sh from deploy/compose/keycloak/realm.json.
+services:
+  keycloak:
+    volumes:
+      - ${E2E_REALM:?}:/opt/keycloak/data/import/realm.json:ro

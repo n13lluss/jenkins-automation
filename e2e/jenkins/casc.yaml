@@ -1,0 +1,80 @@
+# Jenkins configuration for the end-to-end test. Secrets come from files mounted at /run/e2e.
+jenkins:
+  systemMessage: "PipelineForge end-to-end test"
+  numExecutors: 4
+  labelString: "docker"
+  mode: NORMAL
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: admin
+          password: "${readFile:/run/e2e/jenkins-admin-password}"
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+  # A plain pipeline job has no BRANCH_NAME; the test environment deploys from develop.
+  globalNodeProperties:
+    - envVars:
+        env:
+          - key: BRANCH_NAME
+            value: develop
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - usernamePassword:
+              scope: GLOBAL
+              id: registry-credentials
+              username: e2e
+              password: e2e
+          - file:
+              scope: GLOBAL
+              id: cosign-key
+              fileName: cosign.key
+              secretBytes: "${readFileBase64:/run/e2e/cosign.key}"
+          - string:
+              scope: GLOBAL
+              id: cosign-password
+              secret: "${readFile:/run/e2e/cosign-password}"
+          - basicSSHUserPrivateKey:
+              scope: GLOBAL
+              id: deploy-ssh
+              username: deploy
+              privateKeySource:
+                directEntry:
+                  privateKey: "${readFile:/run/e2e/deploy_key}"
+          - file:
+              scope: GLOBAL
+              id: deploy-known-hosts
+              fileName: known_hosts
+              secretBytes: "${readFileBase64:/run/e2e/known_hosts}"
+          - usernamePassword:
+              scope: GLOBAL
+              id: zap-user
+              username: user
+              password: "${readFile:/run/e2e/user-password}"
+          - usernamePassword:
+              scope: GLOBAL
+              id: zap-admin
+              username: admin
+              password: "${readFile:/run/e2e/admin-password}"
+security:
+  globalJobDslSecurityConfiguration:
+    useScriptSecurity: false
+jobs:
+  - script: >
+      pipelineJob('orders') {
+        definition {
+          cpsScm {
+            scm {
+              git {
+                remote { url('file:///e2e-repo') }
+                branch('*/develop')
+              }
+            }
+            scriptPath('Jenkinsfile')
+            lightweight(false)
+          }
+        }
+      }

@@ -1,9 +1,10 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { ECOSYSTEMS, defaultDeploy, newModule, slug } from "@/lib/defaults";
-import type { AiProvider, DastMode, DependencyScanner, DeployTargetType, Ecosystem, EnvironmentConfig, PipelineConfig, Severity } from "@/lib/types";
+import { ECOSYSTEMS, newEnvironment, newModule, slug } from "@/lib/defaults";
+import type { AiProvider, DastMode, DependencyScanner, DeployTargetType, Ecosystem, EnvironmentConfig, PipelineConfig, PipelineLayout, Severity } from "@/lib/types";
 import { Alert, Button, Card, Field, Input, Select, TextArea, Toggle } from "../ui";
+import { EnvironmentSafety } from "./operationsSections";
 
 export type SectionProps = {
   config: PipelineConfig;
@@ -54,6 +55,44 @@ export function ProjectSection({ config: c, update, error, locked, readOnly }: S
             </Field>
           )}
         </Grid>
+      </Card>
+
+      <Card title="Pipeline location">
+        <div className="flex flex-col gap-3">
+          <Field label="Layout" error={error("layout")}>
+            <Select
+              value={c.layout}
+              disabled={ro("layout")}
+              onChange={(e) => update((d) => void (d.layout = e.target.value as PipelineLayout))}
+              options={[
+                { value: "sharedLibrary", label: "Protected shared library (recommended)" },
+                { value: "inRepo", label: "In the application repository" },
+              ]}
+            />
+          </Field>
+          {c.layout === "inRepo" ? (
+            <Alert tone="danger" title="Anyone who can push a branch can change this pipeline">
+              Stage scripts, agent pods and deploy targets live in the application repository, next to the code they check. Use the shared library for production pipelines.
+            </Alert>
+          ) : (
+            <>
+              <p className="text-sm text-muted">
+                The application repository only gets a thin Jenkinsfile. The pipeline, scripts and environments go to a library repository that branches cannot change.
+              </p>
+              <Grid>
+                <Field label="Library name in Jenkins" error={error("library.name")}>
+                  <Input value={c.library.name} disabled={ro("library")} onChange={(e) => update((d) => void (d.library.name = e.target.value))} />
+                </Field>
+                <Field label="Library repository" hint="owner/name on the same SCM; used for the library PR and the Jenkins job." error={error("library.repository")}>
+                  <Input value={c.library.repository ?? ""} disabled={ro("library")} onChange={(e) => update((d) => void (d.library.repository = e.target.value.trim() || null))} />
+                </Field>
+                <Field label="Default version" hint="Protected branch or tag of the library." error={error("library.defaultVersion")}>
+                  <Input value={c.library.defaultVersion} disabled={ro("library")} onChange={(e) => update((d) => void (d.library.defaultVersion = e.target.value.trim()))} />
+                </Field>
+              </Grid>
+            </>
+          )}
+        </div>
       </Card>
 
       <Card
@@ -299,7 +338,7 @@ export function EnvironmentsSection({ config: c, update, error, locked, readOnly
               onClick={() =>
                 update((d) => {
                   const key = `env${d.environments.length + 1}`;
-                  d.environments.push({ key, displayName: key, branchPattern: "develop", requiresApproval: false, url: null, deploy: defaultDeploy(d.name, key) });
+                  d.environments.push(newEnvironment(d.name, key));
                 })
               }
             >
@@ -314,7 +353,7 @@ export function EnvironmentsSection({ config: c, update, error, locked, readOnly
         {error("environments") && <Alert tone="danger" title={error("environments")} />}
         <div className="flex flex-col gap-3">
           {c.environments.map((env, i) => (
-            <EnvironmentCard key={i} env={env} index={i} {...{ update, error, readOnly: ro("environments") }} />
+            <EnvironmentCard key={i} env={env} index={i} earlier={c.environments.slice(0, i)} migrations={c.migrations.tool} {...{ update, error, readOnly: ro("environments") }} />
           ))}
         </div>
       </Card>
@@ -367,7 +406,23 @@ export function EnvironmentsSection({ config: c, update, error, locked, readOnly
   );
 }
 
-function EnvironmentCard({ env, index: i, update, error, readOnly }: { env: EnvironmentConfig; index: number; update: SectionProps["update"]; error: SectionProps["error"]; readOnly: boolean }) {
+function EnvironmentCard({
+  env,
+  index: i,
+  earlier,
+  migrations,
+  update,
+  error,
+  readOnly,
+}: {
+  env: EnvironmentConfig;
+  index: number;
+  earlier: EnvironmentConfig[];
+  migrations: PipelineConfig["migrations"]["tool"];
+  update: SectionProps["update"];
+  error: SectionProps["error"];
+  readOnly: boolean;
+}) {
   const p = `environments[${i}]`;
   const d = env.deploy;
   const setDeploy = <K extends keyof EnvironmentConfig["deploy"]>(k: K, v: EnvironmentConfig["deploy"][K]) => update((c) => void (c.environments[i].deploy[k] = v));
@@ -394,6 +449,16 @@ function EnvironmentCard({ env, index: i, update, error, readOnly }: { env: Envi
         <Field label="Deploy target" error={error(`${p}.deploy`)}>
           <Select value={d.type} disabled={readOnly} onChange={(e) => setDeploy("type", e.target.value as DeployTargetType)} options={DEPLOY_TYPES} />
         </Field>
+        {earlier.length > 0 && d.type !== "none" && (
+          <Field label="Image source" hint="Promote reuses the exact signed image that passed the earlier environment." error={error(`${p}.promoteFrom`)}>
+            <Select
+              value={env.promoteFrom ?? ""}
+              disabled={readOnly}
+              onChange={(e) => update((c) => void (c.environments[i].promoteFrom = e.target.value || null))}
+              options={[{ value: "", label: "Build from this branch" }, ...earlier.map((e) => ({ value: e.key, label: `Promote from ${e.displayName}` }))]}
+            />
+          </Field>
+        )}
         <div className="flex items-end">
           <Toggle label="Manual approval" checked={env.requiresApproval} disabled={readOnly} onChange={(v) => update((c) => void (c.environments[i].requiresApproval = v))} />
         </div>
@@ -410,6 +475,13 @@ function EnvironmentCard({ env, index: i, update, error, readOnly }: { env: Envi
             {text("host", "Host", "host or host:port")}
             {text("user", "SSH user")}
             {text("remoteDir", "Remote directory")}
+            {text("bindAddress", "Bind address", "127.0.0.1 keeps the app behind a reverse proxy on the host.")}
+            <Field label="Env file on the host (optional)" hint="App settings and secrets, e.g. app.env next to the compose file." error={error(`${p}.deploy.envFile`)}>
+              <Input value={d.envFile ?? ""} disabled={readOnly} onChange={(e) => setDeploy("envFile", e.target.value.trim() || null)} />
+            </Field>
+            <Field label="Host port" error={error(`${p}.deploy.hostPort`)}>
+              <Input type="number" value={d.hostPort} disabled={readOnly} onChange={(e) => setDeploy("hostPort", Number(e.target.value) || 8080)} />
+            </Field>
             {text("sshCredentialId", "SSH key credential ID")}
             {text("knownHostsCredentialId", "known_hosts credential ID", "Secret file with the pinned host key.")}
           </>
@@ -423,6 +495,7 @@ function EnvironmentCard({ env, index: i, update, error, readOnly }: { env: Envi
           </>
         )}
       </Grid>
+      {d.type !== "none" && <EnvironmentSafety env={env} index={i} migrations={migrations} update={update} error={error} readOnly={readOnly} />}
       {!readOnly && (
         <div className="mt-2 flex justify-end">
           <Button variant="ghost" className="text-danger" onClick={() => update((c) => void c.environments.splice(i, 1))}>

@@ -20,6 +20,10 @@ PipelineForge holds tokens that can write to repositories and reach CI/CD system
 | Web | Strict CSP with nonces and `strict-dynamic`, `frame-ancestors 'none'`, nosniff, HSTS (production), Referrer-Policy and Permissions-Policy. The API returns `default-src 'none'`. |
 | Abuse | A per-user rate limit of 300/min, and 20/min for expensive actions (scan, PR, Jenkins, AI). Request bodies are capped at 1 MB. |
 | Audit | Append-only (the DbContext rejects updates and deletes). It records workspace, member, connection, preset and pipeline changes, scans, downloads, PRs, Jenkins calls and AI calls. Grant the database user `INSERT, SELECT` only on `AuditEvents` in production. |
+| Pipeline trust | In the shared library layout the pipeline, scripts, agent pods and environments come from a protected library repository; each stage overwrites the workspace copies, so a branch or fork cannot change what runs with the credentials. The job disables library version overrides and only trusts fork PRs from contributors with write access. A developer with write access can still edit the thin Jenkinsfile on a branch, so keep deploy credentials in a folder or credentials domain used by the protected branches. |
+| Ingest tokens | Each pipeline reports deploys with its own `pf_ing_` token: 256 random bits, only the SHA-256 is stored, revocable, rate-limited per token, 16 KB bodies with strict validation. The token can only add deploy events for its own pipeline. The frontend forwards just this one route without a session or cookies. |
+| Notifications and metrics in pipelines | Webhook URLs and tokens are Jenkins credentials. The ingest token is written to a private temp header file, never put on a command line; a failed notification or report never changes the build result. |
+| Drift | Comparing with the repository only reads the generated paths (200 KB each) with the pipeline's own SCM connection. Maintainers only; audited. |
 | Supply chain | Lockfiles, pinned base images, a chiseled .NET runtime, distroless Node, non-root and read-only containers with no capabilities. CI runs Gitleaks, Trivy, `npm audit` and the NuGet vulnerability check. |
 
 ## STRIDE summary
@@ -41,4 +45,6 @@ PipelineForge holds tokens that can write to repositories and reach CI/CD system
 - Register the app at your identity provider (Entra ID or Keycloak) with PKCE, and enforce MFA there.
 - Set `Outbound:AllowedHosts` to your SCM, Jenkins and AI hosts.
 - Run database migrations from a separate job; give the runtime user least privilege.
+- Use the shared library layout for production pipelines and protect the library's default branch.
+- Rotate ingest tokens when people leave; revoke unused ones (the token list shows the last use).
 - Use fine-grained, repository-scoped SCM tokens. Use a Jenkins user limited to the folder that holds the generated jobs.

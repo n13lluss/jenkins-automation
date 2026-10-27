@@ -120,6 +120,57 @@ namespace PipelineForge.Infrastructure.Persistence.Migrations
                     b.ToTable("Connections");
                 });
 
+            modelBuilder.Entity("PipelineForge.Infrastructure.Persistence.DeploymentEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("BuildUrl")
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.Property<string>("Commit")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset?>("CommitTime")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Digest")
+                        .HasMaxLength(71)
+                        .HasColumnType("character varying(71)");
+
+                    b.Property<string>("Environment")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<DateTimeOffset>("FinishedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("ProjectId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("ReceivedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("StartedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("Success")
+                        .HasColumnType("boolean");
+
+                    b.Property<Guid>("WorkspaceId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProjectId", "Environment", "FinishedAt");
+
+                    b.ToTable("DeploymentEvents");
+                });
+
             modelBuilder.Entity("PipelineForge.Infrastructure.Persistence.GenerationRun", b =>
                 {
                     b.Property<Guid>("Id")
@@ -156,6 +207,52 @@ namespace PipelineForge.Infrastructure.Persistence.Migrations
                     b.HasIndex("WorkspaceId", "ProjectId");
 
                     b.ToTable("GenerationRuns");
+                });
+
+            modelBuilder.Entity("PipelineForge.Infrastructure.Persistence.IngestToken", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("CreatedBy")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("LastUsedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Prefix")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<Guid>("ProjectId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("RevokedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Sha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<Guid>("WorkspaceId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProjectId");
+
+                    b.HasIndex("Sha256")
+                        .IsUnique();
+
+                    b.HasIndex("WorkspaceId", "ProjectId");
+
+                    b.ToTable("IngestTokens");
                 });
 
             modelBuilder.Entity("PipelineForge.Infrastructure.Persistence.Membership", b =>
@@ -358,7 +455,25 @@ namespace PipelineForge.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("PipelineForge.Infrastructure.Persistence.DeploymentEvent", b =>
+                {
+                    b.HasOne("PipelineForge.Infrastructure.Persistence.PipelineProject", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("PipelineForge.Infrastructure.Persistence.GenerationRun", b =>
+                {
+                    b.HasOne("PipelineForge.Infrastructure.Persistence.PipelineProject", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("PipelineForge.Infrastructure.Persistence.IngestToken", b =>
                 {
                     b.HasOne("PipelineForge.Infrastructure.Persistence.PipelineProject", null)
                         .WithMany()

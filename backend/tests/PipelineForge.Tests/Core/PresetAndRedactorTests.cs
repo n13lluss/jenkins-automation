@@ -37,7 +37,8 @@ public class RedactorTests
 {
     [Theory]
     [InlineData("password = \"hunter22hunter\"")]
-    [InlineData("AWS key AKIAABCDEFGHIJKLMNOP here")]
+    // Fake key assembled at runtime so the source itself does not trip secret scanners.
+    [InlineData("AWS key " + "AKIA" + "ABCDEFGHIJKLMNOP here")]
     [InlineData("token: ghp_abcdefghijklmnopqrstuvwxyz0123456789AB")]
     [InlineData("postgres://admin:s3cr3t@db:5432/app")]
     [InlineData("key = sk-ant-api03-abcdefghijklmnopqrstuvwxyz")]

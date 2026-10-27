@@ -13,7 +13,14 @@ public sealed record JenkinsConnectionInfo(Uri BaseUrl, string Username, string 
 
 public sealed record JenkinsValidation(bool Valid, string Output);
 
-public sealed record MultibranchJob(string Name, ScmKind Scm, string Repository, string ScmCredentialId, string? ServerUrl);
+public sealed record MultibranchJob(string Name, ScmKind Scm, string Repository, string ScmCredentialId, string? ServerUrl, string ScriptPath = "Jenkinsfile")
+{
+    /// <summary>Folder library to register on the job (shared library layout).</summary>
+    public JobLibrary? Library { get; init; }
+}
+
+/// <summary>A shared library loaded from <paramref name="Repository"/> on the same SCM; the version cannot be overridden.</summary>
+public sealed record JobLibrary(string Name, string Repository, string DefaultVersion);
 
 /// <summary>
 /// Jenkins REST calls authenticated with a user API token (no CSRF crumb needed).
@@ -80,42 +87,15 @@ public sealed partial class JenkinsClient(IHttpClientFactory factory, IOptions<O
 
     public static string JobXml(MultibranchJob job)
     {
-        var parts = job.Repository.Split('/');
-        if (parts.Length != 2) throw new ArgumentException("Repository must look like owner/name.");
         const string project = "org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject";
-        XElement source;
-        if (job.Scm == ScmKind.GitHub)
-        {
-            const string ns = "org.jenkinsci.plugins.github__branch__source";
-            source = new XElement("source",
-                new XAttribute("class", "org.jenkinsci.plugins.github_branch_source.GitHubSCMSource"),
-                new XElement("id", $"pipelineforge-{Guid.NewGuid():N}"),
-                job.ServerUrl is null ? null : new XElement("apiUri", job.ServerUrl),
-                new XElement("credentialsId", job.ScmCredentialId),
-                new XElement("repoOwner", parts[0]),
-                new XElement("repository", parts[1]),
-                new XElement("traits",
-                    new XElement($"{ns}.BranchDiscoveryTrait", new XElement("strategyId", 1)),
-                    new XElement($"{ns}.OriginPullRequestDiscoveryTrait", new XElement("strategyId", 1))));
-        }
-        else
-        {
-            const string ns = "com.cloudbees.jenkins.plugins.bitbucket";
-            source = new XElement("source",
-                new XAttribute("class", $"{ns}.BitbucketSCMSource"),
-                new XElement("id", $"pipelineforge-{Guid.NewGuid():N}"),
-                new XElement("serverUrl", job.ServerUrl ?? "https://bitbucket.org"),
-                new XElement("credentialsId", job.ScmCredentialId),
-                new XElement("repoOwner", parts[0]),
-                new XElement("repository", parts[1]),
-                new XElement("traits",
-                    new XElement($"{ns}.BranchDiscoveryTrait", new XElement("strategyId", 1)),
-                    new XElement($"{ns}.OriginPullRequestDiscoveryTrait", new XElement("strategyId", 1))));
-        }
+        // Fork pull requests are built, but only forks of trusted contributors use their own Jenkinsfile;
+        // the others run the target branch's Jenkinsfile.
+        var source = Source(job, job.Repository, $"pipelineforge-{Guid.NewGuid():N}", forks: true);
 
         var doc = new XDocument(
             new XElement(project,
                 new XElement("description", "Managed by PipelineForge."),
+                job.Library is { } lib ? new XElement("properties", FolderLibrary(job, lib)) : null,
                 new XElement("orphanedItemStrategy",
                     new XAttribute("class", "com.cloudbees.hudson.plugins.folder.computed.DefaultOrphanedItemStrategy"),
                     new XElement("pruneDeadBranches", true),
@@ -133,7 +113,74 @@ public sealed partial class JenkinsClient(IHttpClientFactory factory, IOptions<O
                 new XElement("factory",
                     new XAttribute("class", "org.jenkinsci.plugins.workflow.multibranch.WorkflowBranchProjectFactory"),
                     new XElement("owner", new XAttribute("class", project), new XAttribute("reference", "../..")),
-                    new XElement("scriptPath", "Jenkinsfile"))));
+                    new XElement("scriptPath", job.ScriptPath is "Jenkinsfile" or "Jenkinsfile.scheduled" ? job.ScriptPath : throw new ArgumentException("Unsupported script path.")))));
         return doc.Declaration + doc.ToString();
+    }
+
+    private static (string Owner, string Repo) Split(string repository)
+    {
+        var parts = repository.Split('/');
+        if (parts.Length != 2 || parts.Any(p => p.Length == 0)) throw new ArgumentException("Repository must look like owner/name.");
+        return (parts[0], parts[1]);
+    }
+
+    private static XElement Source(MultibranchJob job, string repository, string id, bool forks)
+    {
+        var (owner, repo) = Split(repository);
+        if (job.Scm == ScmKind.GitHub)
+        {
+            const string ns = "org.jenkinsci.plugins.github__branch__source";
+            return new XElement("source",
+                new XAttribute("class", "org.jenkinsci.plugins.github_branch_source.GitHubSCMSource"),
+                new XElement("id", id),
+                job.ServerUrl is null ? null : new XElement("apiUri", job.ServerUrl),
+                new XElement("credentialsId", job.ScmCredentialId),
+                new XElement("repoOwner", owner),
+                new XElement("repository", repo),
+                new XElement("traits",
+                    new XElement($"{ns}.BranchDiscoveryTrait", new XElement("strategyId", 1)),
+                    forks ? new XElement($"{ns}.OriginPullRequestDiscoveryTrait", new XElement("strategyId", 1)) : null,
+                    forks ? new XElement($"{ns}.ForkPullRequestDiscoveryTrait",
+                        new XElement("strategyId", 1),
+                        new XElement("trust", new XAttribute("class", "org.jenkinsci.plugins.github_branch_source.ForkPullRequestDiscoveryTrait$TrustPermission"))) : null));
+        }
+        const string bb = "com.cloudbees.jenkins.plugins.bitbucket";
+        return new XElement("source",
+            new XAttribute("class", $"{bb}.BitbucketSCMSource"),
+            new XElement("id", id),
+            new XElement("serverUrl", job.ServerUrl ?? "https://bitbucket.org"),
+            new XElement("credentialsId", job.ScmCredentialId),
+            new XElement("repoOwner", owner),
+            new XElement("repository", repo),
+            new XElement("traits",
+                new XElement($"{bb}.BranchDiscoveryTrait", new XElement("strategyId", 1)),
+                forks ? new XElement($"{bb}.OriginPullRequestDiscoveryTrait", new XElement("strategyId", 1)) : null,
+                forks ? new XElement($"{bb}.ForkPullRequestDiscoveryTrait",
+                    new XElement("strategyId", 1),
+                    new XElement("trust", new XAttribute("class", $"{bb}.ForkPullRequestDiscoveryTrait$TrustTeamForks"))) : null));
+    }
+
+    private static XElement LibrarySource(MultibranchJob job, JobLibrary lib)
+    {
+        var scm = Source(job, lib.Repository, $"pipelineforge-lib-{Guid.NewGuid():N}", forks: false);
+        scm.Name = "scm";
+        return scm;
+    }
+
+    private static XElement FolderLibrary(MultibranchJob job, JobLibrary lib)
+    {
+        const string libs = "org.jenkinsci.plugins.workflow.libs";
+        return new XElement($"{libs}.FolderLibraries",
+            new XElement("libraries",
+                new XElement($"{libs}.LibraryConfiguration",
+                    new XElement("name", lib.Name),
+                    new XElement("retriever",
+                        new XAttribute("class", $"{libs}.SCMSourceRetriever"),
+                        new XElement("clone", false),
+                        LibrarySource(job, lib)),
+                    new XElement("defaultVersion", lib.DefaultVersion),
+                    new XElement("implicit", false),
+                    new XElement("allowVersionOverride", false),
+                    new XElement("includeInChangesets", false))));
     }
 }

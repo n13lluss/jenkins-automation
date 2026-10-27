@@ -105,6 +105,37 @@ public sealed class GenerationRun
     public Guid CreatedBy { get; set; }
 }
 
+/// <summary>Lets one pipeline's Jenkins jobs report deployments. Only the SHA-256 of the token is stored.</summary>
+public sealed class IngestToken
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid WorkspaceId { get; set; }
+    public Guid ProjectId { get; set; }
+    /// <summary>First characters of the token, to tell tokens apart in the UI.</summary>
+    public required string Prefix { get; set; }
+    public required string Sha256 { get; set; }
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public Guid CreatedBy { get; set; }
+    public DateTimeOffset? RevokedAt { get; set; }
+    public DateTimeOffset? LastUsedAt { get; set; }
+}
+
+public sealed class DeploymentEvent
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid WorkspaceId { get; set; }
+    public Guid ProjectId { get; set; }
+    public required string Environment { get; set; }
+    public string? Digest { get; set; }
+    public string? Commit { get; set; }
+    public DateTimeOffset? CommitTime { get; set; }
+    public DateTimeOffset StartedAt { get; set; }
+    public DateTimeOffset FinishedAt { get; set; }
+    public bool Success { get; set; }
+    public string? BuildUrl { get; set; }
+    public DateTimeOffset ReceivedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
 /// <summary>Append-only: the DbContext refuses updates and deletes.</summary>
 public sealed class AuditEvent
 {

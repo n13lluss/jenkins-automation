@@ -114,6 +114,123 @@ public class ApiTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Branch_protection_needs_a_maintainer_and_a_linked_repository()
+    {
+        var c = _f.As("bea");
+        var ws = await Workspace(c, "Rules");
+        await Member(ws, "bea", "vin", "viewer");
+        var project = await Read(await c.PostAsJsonAsync($"/api/workspaces/{ws}/pipelines",
+            new { name = "orders", source = "blank", config = Samples.MavenHelm() }, Json));
+        var url = $"/api/workspaces/{ws}/pipelines/{project.GetProperty("id").GetGuid()}/branch-protection";
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await _f.As("vin").PostAsJsonAsync(url, new { approvals = 1 })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await c.PostAsJsonAsync(url, new { approvals = 1 })).StatusCode);
+    }
+
+    [Fact]
+    public async Task Shared_library_layout_opens_a_pull_request_on_each_repository()
+    {
+        var c = _f.As("lia");
+        var ws = await Workspace(c, "Library");
+        var conn = await Read(await c.PostAsJsonAsync($"/api/workspaces/{ws}/connections",
+            new { kind = "scm", name = "GitHub", provider = "GitHub", baseUrl = "https://api.github.com", secret = "ghp_x" }));
+        var config = Samples.MavenHelm();
+        config.Name = "lib-orders";
+        config.Layout = PipelineForge.Core.Model.PipelineLayout.SharedLibrary;
+        config.Library.Repository = "acme/jenkins-library";
+        var project = await Read(await c.PostAsJsonAsync($"/api/workspaces/{ws}/pipelines", new
+        {
+            name = "lib-orders", source = "scan", config, scmConnectionId = conn.GetProperty("id").GetGuid(), repository = "acme/orders", branch = "develop",
+        }, Json));
+
+        var pr = await Read(await c.PostAsJsonAsync($"/api/workspaces/{ws}/pipelines/{project.GetProperty("id").GetGuid()}/pull-request", new { targetBranch = "develop" }));
+
+        Assert.Equal("https://github.com/acme/orders/pull/1", pr.GetProperty("url").GetString());
+        Assert.Equal("https://github.com/acme/jenkins-library/pull/1", pr.GetProperty("libraryUrl").GetString());
+        List<(string Repository, IReadOnlyList<PipelineForge.Core.Scm.FileChange> Files)> commits;
+        lock (_f.GitHub.Commits) commits = _f.GitHub.Commits.Where(x => x.Repository is "acme/orders" or "acme/jenkins-library").ToList();
+        var app = commits.Single(x => x.Repository == "acme/orders").Files.Select(f => f.Path).ToList();
+        var lib = commits.Single(x => x.Repository == "acme/jenkins-library").Files.Select(f => f.Path).ToList();
+        Assert.Contains("Jenkinsfile", app);
+        Assert.DoesNotContain(app, p => p.StartsWith("jenkins/") || p.StartsWith("library/"));
+        Assert.Contains("vars/pfLibOrders.groovy", lib);
+        Assert.Contains("resources/pipelineforge/lib-orders/jenkins/stages/deploy.groovy", lib);
+        lock (_f.GitHub.Branches) Assert.Contains(_f.GitHub.Branches, b => b.Repository == "acme/jenkins-library" && b.From == "main");
+    }
+
+    [Fact]
+    public async Task Ingest_tokens_report_deployments_into_the_metrics()
+    {
+        var c = _f.As("ike");
+        var ws = await Workspace(c, "Metrics");
+        await Member(ws, "ike", "mo", "maintainer");
+        var project = await Read(await c.PostAsJsonAsync($"/api/workspaces/{ws}/pipelines", new { name = "orders", source = "blank", config = Samples.MavenHelm() }, Json));
+        var id = project.GetProperty("id").GetGuid();
+        var other = (await Read(await c.PostAsJsonAsync($"/api/workspaces/{ws}/pipelines", new { name = "other", source = "blank", config = Samples.MavenHelm() }, Json))).GetProperty("id").GetGuid();
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await _f.As("mo").PostAsync($"/api/workspaces/{ws}/pipelines/{id}/ingest-tokens", null)).StatusCode);
+        var created = await Read(await c.PostAsync($"/api/workspaces/{ws}/pipelines/{id}/ingest-tokens", null));
+        var token = created.GetProperty("token").GetString()!;
+        Assert.StartsWith("pf_ing_", token);
+        var listed = await (await c.GetAsync($"/api/workspaces/{ws}/pipelines/{id}/ingest-tokens")).Content.ReadAsStringAsync();
+        Assert.DoesNotContain(token, listed);
+
+        HttpRequestMessage Report(string? bearer, object body)
+        {
+            var m = new HttpRequestMessage(HttpMethod.Post, "/api/ingest/deployments") { Content = JsonContent.Create(body) };
+            if (bearer is not null) m.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearer);
+            return m;
+        }
+        var now = DateTimeOffset.UtcNow;
+        var good = new { environment = "prod", result = "success", startedAt = now.AddMinutes(-5), finishedAt = now, commit = "0123abcd", commitTime = now.AddHours(-3), digest = "sha256:" + new string('a', 64), buildUrl = "https://jenkins.example.com/job/x/1/" };
+        var anon = _f.CreateClient();
+
+        Assert.Equal(HttpStatusCode.Accepted, (await anon.SendAsync(Report(token, good))).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anon.SendAsync(Report(null, good))).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anon.SendAsync(Report("pf_ing_" + new string('x', 43), good))).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await anon.SendAsync(Report(token, new { environment = "prod; drop", result = "success", startedAt = now, finishedAt = now }))).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await anon.SendAsync(Report(token, new { environment = "prod", result = "success", startedAt = now, finishedAt = now, buildUrl = "javascript:alert(1)" }))).StatusCode);
+
+        var metrics = await Read(await _f.As("mo").GetAsync($"/api/workspaces/{ws}/pipelines/{id}/metrics?days=30"));
+        var prod = metrics.GetProperty("environments").EnumerateArray().Single();
+        Assert.Equal("prod", prod.GetProperty("environment").GetString());
+        Assert.Equal(1, prod.GetProperty("deploys").GetInt32());
+        Assert.Equal(3, prod.GetProperty("medianLeadTimeHours").GetDouble(), 1);
+        var otherMetrics = await Read(await c.GetAsync($"/api/workspaces/{ws}/pipelines/{other}/metrics"));
+        Assert.Empty(otherMetrics.GetProperty("environments").EnumerateArray());
+
+        var tokenId = created.GetProperty("id").GetGuid();
+        Assert.Equal(HttpStatusCode.NoContent, (await c.DeleteAsync($"/api/workspaces/{ws}/pipelines/{id}/ingest-tokens/{tokenId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anon.SendAsync(Report(token, good))).StatusCode);
+    }
+
+    [Fact]
+    public async Task Drift_compares_generated_files_with_the_repository()
+    {
+        var c = _f.As("dee");
+        var ws = await Workspace(c, "Drift");
+        var conn = await Read(await c.PostAsJsonAsync($"/api/workspaces/{ws}/connections",
+            new { kind = "scm", name = "GitHub", provider = "GitHub", baseUrl = "https://api.github.com", secret = "ghp_x" }));
+        var project = await Read(await c.PostAsJsonAsync($"/api/workspaces/{ws}/pipelines", new
+        {
+            name = "drifty", source = "scan", config = Samples.MavenHelm(), scmConnectionId = conn.GetProperty("id").GetGuid(), repository = "acme/drifty", branch = "develop",
+        }, Json));
+        var id = project.GetProperty("id").GetGuid();
+        var files = PipelineForge.Core.Generation.PipelineGenerator.Generate(Samples.MavenHelm()).Files.ToDictionary(f => f.Path, f => f.Content);
+        _f.GitHub.Files[("acme/drifty", "develop", "Jenkinsfile")] = files["Jenkinsfile"].Replace("pipelineforge-version: ", "pipelineforge-version: 0.9.0 was ");
+        _f.GitHub.Files[("acme/drifty", "develop", "jenkins/stages/build.groovy")] = files["jenkins/stages/build.groovy"] + "// local change\n";
+        _f.GitHub.Files[("acme/drifty", "develop", "jenkins/stages/common.groovy")] = "def init() { }\n";
+
+        var drift = (await Read(await c.GetAsync($"/api/workspaces/{ws}/pipelines/{id}/drift"))).EnumerateArray()
+            .ToDictionary(d => d.GetProperty("path").GetString()!, d => d);
+        Assert.Equal("identical", drift["Jenkinsfile"].GetProperty("status").GetString());
+        Assert.Equal("changed", drift["jenkins/stages/build.groovy"].GetProperty("status").GetString());
+        Assert.Contains("-// local change", drift["jenkins/stages/build.groovy"].GetProperty("diff").GetString());
+        Assert.Equal("customised", drift["jenkins/stages/common.groovy"].GetProperty("status").GetString());
+        Assert.Equal("missing", drift["docs/PIPELINE.md"].GetProperty("status").GetString());
+    }
+
+    [Fact]
     public async Task Download_returns_a_zip_and_records_the_run()
     {
         var c = _f.As("dan");
@@ -132,6 +249,20 @@ public class ApiTests : IClassFixture<ApiFactory>
         Assert.Single(runs.EnumerateArray());
         var audit = await Read(await c.GetAsync($"/api/workspaces/{ws}/audit"));
         Assert.Contains(audit.EnumerateArray(), a => a.GetProperty("action").GetString() == "pipeline.download");
+    }
+
+    [Fact]
+    public async Task Built_in_preset_is_listed_and_applied_in_preview()
+    {
+        var c = _f.As("bea");
+        var ws = await Workspace(c, "Built-in");
+        var list = await Read(await c.GetAsync("/api/presets/built-in"));
+        var id = list.EnumerateArray().Single().GetProperty("id").GetString();
+        var preview = await Read(await c.PostAsJsonAsync($"/api/workspaces/{ws}/pipelines/preview",
+            new { config = Samples.MavenHelm(), applyPreset = false, builtInPresetId = id }, Json));
+        Assert.True(preview.GetProperty("success").GetBoolean(), preview.GetProperty("errors").ToString());
+        Assert.Contains(preview.GetProperty("files").EnumerateArray(), f => f.GetProperty("path").GetString() == "Jenkinsfile.scheduled");
+        Assert.True(preview.GetProperty("effectiveConfig").GetProperty("signing").GetProperty("enabled").GetBoolean());
     }
 
     [Fact]

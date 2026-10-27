@@ -19,6 +19,11 @@ Browser ──► Next.js (BFF) ──► ASP.NET Core API ──► PostgreSQL
 4. **Validation**: `ConfigValidator` allow-lists every value that reaches a generated file.
 5. **Generation**: `PipelineGenerator` renders the files with code writers, not text templates, so escaping is done in one place (`GroovyEscaper`).
 6. **Output**: zip download, a pull request (branch + commit + PR) through the SCM API, Jenkins linting and job creation. Each output records a `GenerationRun` with file hashes, plus an audit event.
+   - In the shared library layout, `LibraryWriter` moves pipeline-owned files under `library/`, and the pull request action opens a second PR on the library repository.
+7. **Drift**: `VersionMarker` stamps every generated file. `DriftComparer` compares the files with the repository copies (missing / identical / changed / edited by hand) and renders unified diffs, so an update PR can carry only what changed.
+8. **Delivery metrics**: deploys post to `POST /api/ingest/deployments` with a per-pipeline token. `DeliveryMetrics` computes deploy frequency, lead time, change failure rate and time to restore per environment.
+
+The same generator runs offline in `PipelineForge.Cli`, which `e2e/run.sh` uses to test a generated pipeline end to end on a real Jenkins.
 
 ## Backend projects
 
@@ -53,4 +58,6 @@ Browser ──► Next.js (BFF) ──► ASP.NET Core API ──► PostgreSQL
 | Presets, PresetVersions | team standards and their versions |
 | Projects | saved pipeline configs |
 | GenerationRuns | file hashes, config hash and PR URL for each generation |
+| IngestTokens | per-pipeline deploy-report tokens (SHA-256 only), revocation and last use |
+| DeploymentEvents | reported deploys: environment, digest, commit, timings, result |
 | AuditEvents | append-only audit log |

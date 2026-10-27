@@ -1,0 +1,13 @@
+configuration-as-code
+job-dsl
+workflow-aggregator
+pipeline-model-definition
+pipeline-utility-steps
+docker-workflow
+credentials-binding
+ssh-agent
+git
+junit
+warnings-ng
+timestamper
+ws-cleanup

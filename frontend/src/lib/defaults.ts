@@ -1,4 +1,18 @@
-import type { DeployTarget, Ecosystem, EnvironmentConfig, ModuleConfig, PipelineConfig } from "./types";
+import type { DependencyProxy, DeployTarget, Ecosystem, EnvironmentConfig, LoginConfig, ModuleConfig, PipelineConfig } from "./types";
+
+export const defaultLogin = (): LoginConfig => ({ loginPath: "/login", format: "form", usernameField: "username", passwordField: "password", logoutPath: "/logout" });
+
+export const defaultProxy = (): DependencyProxy => ({
+  type: "nexus",
+  baseUrl: "https://nexus.example.com",
+  credentialId: "nexus-credentials",
+  mavenPath: "repository/maven-public",
+  npmPath: "repository/npm-proxy",
+  pypiPath: "repository/pypi-proxy/simple",
+  nugetPath: "repository/nuget-proxy/index.json",
+  goPath: "repository/go-proxy",
+  composerPath: "repository/packagist-proxy",
+});
 
 export const ECOSYSTEMS: { value: Ecosystem; label: string; version: string; versionLabel: string }[] = [
   { value: "maven", label: "Java · Maven", version: "21", versionLabel: "Java" },
@@ -24,6 +38,8 @@ export function defaultDeploy(app: string, key: string): DeployTarget {
     host: "",
     user: "deploy",
     remoteDir: `/opt/${app}`,
+    bindAddress: "127.0.0.1",
+    hostPort: 8080,
     azureCredentialId: "azure-sp",
     resourceGroup: "",
     appName: `${app}-${key}`,
@@ -31,12 +47,27 @@ export function defaultDeploy(app: string, key: string): DeployTarget {
   };
 }
 
+export function newEnvironment(app: string, key: string, displayName = key, branchPattern = "develop", requiresApproval = false): EnvironmentConfig {
+  return {
+    key,
+    displayName,
+    branchPattern,
+    requiresApproval,
+    url: null,
+    deploy: defaultDeploy(app, key),
+    health: { path: "/", expectedStatus: 200, successes: 3, timeoutSeconds: 300 },
+    rollbackOnFailure: true,
+    database: null,
+    appSecrets: null,
+  };
+}
+
 export function dtap(app: string): EnvironmentConfig[] {
   return [
-    { key: "dev", displayName: "Development", branchPattern: "develop", requiresApproval: false, url: null, deploy: defaultDeploy(app, "dev") },
-    { key: "test", displayName: "Test", branchPattern: "develop", requiresApproval: false, url: null, deploy: defaultDeploy(app, "test") },
-    { key: "acc", displayName: "Acceptance", branchPattern: "release/*", requiresApproval: false, url: null, deploy: defaultDeploy(app, "acc") },
-    { key: "prod", displayName: "Production", branchPattern: "main", requiresApproval: true, url: null, deploy: defaultDeploy(app, "prod") },
+    newEnvironment(app, "dev", "Development", "develop"),
+    newEnvironment(app, "test", "Test", "develop"),
+    newEnvironment(app, "acc", "Acceptance", "release/*"),
+    newEnvironment(app, "prod", "Production", "main", true),
   ];
 }
 
@@ -47,9 +78,26 @@ export function newModule(name: string, ecosystem: Ecosystem = "maven", path = "
 export function blankConfig(name = "app"): PipelineConfig {
   return {
     name,
+    layout: "sharedLibrary",
+    library: { name: "pipelineforge", repository: null, defaultVersion: "main" },
     agent: { type: "kubernetes", dockerLabel: "docker", kubernetesCloud: null, imageOverrides: {} },
     modules: [newModule(name)],
     registry: null,
+    dependencyProxy: null,
+    signing: { enabled: false, keyCredentialId: "cosign-key", passwordCredentialId: "cosign-password", publicKeyPath: "security/cosign.pub", transparencyLog: false, attestations: false },
+    clusterPolicy: { enabled: false, disallowLatestTag: true, requireRunAsNonRoot: true },
+    rateLimit: { enabled: false, login: defaultLogin(), testUsername: "pf-ratelimit-probe", attempts: 20, expectedStatuses: [429, 423], environments: ["test"] },
+    ticketing: {
+      provider: "none",
+      jiraSite: "jira",
+      projectKey: "SEC",
+      issueType: "Bug",
+      minSeverity: "high",
+      maxPerBuild: 10,
+      pullRequests: false,
+      sources: ["secretScan", "dependencies", "container", "iac", "sonar", "dast", "accessControl"],
+    },
+    triggers: { checks: "always", package: "always" },
     quality: {
       enabled: true,
       platform: "sonarQube",
@@ -61,15 +109,41 @@ export function blankConfig(name = "app"): PipelineConfig {
     },
     security: {
       secretScan: true,
+      secretScanScope: "history",
+      dependencyPinning: false,
+      exceptionRegister: false,
+      dockerfileLint: false,
+      allowedBaseRegistries: [],
       dependencyScanners: ["trivyFs"],
       sbom: true,
       licenseCheck: false,
       containerScan: true,
+      containerScanner: "trivy",
       iacScan: false,
+      iacScanner: "trivy",
+      iacOnlyWhenChanged: false,
+      snykMonitor: false,
       failOnSeverity: "high",
       nvdApiKeyCredentialId: "nvd-api-key",
       snykCredentialId: "snyk-token",
-      dast: { enabled: false, mode: "baseline", apiSpec: null, environments: ["test"] },
+      dast: {
+        enabled: false,
+        mode: "baseline",
+        apiSpec: null,
+        environments: ["test"],
+        ephemeral: { enabled: false, module: null, containerPort: 8080, healthPath: "/actuator/health", imagePullSecret: null, appEnvironment: [] },
+        authenticated: {
+          enabled: false,
+          environment: "test",
+          login: defaultLogin(),
+          userCredentialId: "zap-user",
+          adminCredentialId: "zap-admin",
+          protectedPath: "/",
+          adminOnlyPaths: ["/admin"],
+          beforeProduction: false,
+        },
+        schedule: { enabled: false, environment: "test", baselineCron: "H */6 * * *", authenticatedDaily: true },
+      },
     },
     compliance: { profile: "none", approverGroup: "release-managers" },
     environments: dtap(name),
@@ -84,6 +158,14 @@ export function blankConfig(name = "app"): PipelineConfig {
       pullRequestsOnly: true,
     },
     customStages: [],
+    migrations: { tool: "none", path: "src/main/resources/db/migration" },
+    metrics: { enabled: false, url: "", tokenCredentialId: "pipelineforge-ingest" },
+    notifications: {
+      slack: { enabled: false, channel: "#deployments", tokenCredentialId: null },
+      teams: { enabled: false, webhookCredentialId: "teams-webhook" },
+      email: { enabled: false, recipients: [] },
+      events: ["failure", "fixed", "approval", "productionDeployed"],
+    },
     options: { timeoutMinutes: 60, buildsToKeep: 20, disableConcurrentBuilds: true },
   };
 }

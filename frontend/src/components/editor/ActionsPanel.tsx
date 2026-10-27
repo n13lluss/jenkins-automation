@@ -2,10 +2,28 @@
 
 import { useEffect, useState } from "react";
 import { api, errorMessage } from "@/lib/api";
-import type { AiReview, Connection, Project, Run } from "@/lib/types";
+import type { AiReview, Connection, FileDrift, IngestToken, Project, Run } from "@/lib/types";
 import { Alert, Badge, Button, Card, Field, Input, Select } from "../ui";
 
-export function ActionsPanel({ ws, project, dirty, selected, canEdit, valid }: { ws: string; project: Project; dirty: boolean; selected: Set<string>; canEdit: boolean; valid: boolean }) {
+export function ActionsPanel({
+  ws,
+  project,
+  dirty,
+  selected,
+  canEdit,
+  admin,
+  valid,
+  onSelect,
+}: {
+  ws: string;
+  project: Project;
+  dirty: boolean;
+  selected: Set<string>;
+  canEdit: boolean;
+  admin: boolean;
+  valid: boolean;
+  onSelect: (paths: string[]) => void;
+}) {
   const [connections, setConnections] = useState<Connection[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
   const files = [...selected].join(",");
@@ -22,6 +40,7 @@ export function ActionsPanel({ ws, project, dirty, selected, canEdit, valid }: {
   return (
     <div className="flex flex-col gap-4">
       {dirty && <Alert tone="warn" title="Save your changes first: the actions below use the saved pipeline." />}
+      {canEdit && project.repository && <DriftCard ws={ws} project={project} disabled={disabled} onSelect={onSelect} />}
       <div className="grid gap-4 md:grid-cols-2">
         <Card title="Download">
           <p className="mb-3 text-sm text-muted">{selected.size ? `${selected.size} selected file(s)` : "All files"} as a zip.</p>
@@ -34,8 +53,10 @@ export function ActionsPanel({ ws, project, dirty, selected, canEdit, valid }: {
           </a>
         </Card>
         {canEdit && <PullRequestCard ws={ws} project={project} files={[...selected]} disabled={disabled} />}
+        {canEdit && project.repository && <BranchProtectionCard ws={ws} project={project} disabled={disabled} />}
         {canEdit && <JenkinsCard ws={ws} project={project} connections={jenkins} disabled={disabled} />}
         {canEdit && <AiCard ws={ws} project={project} connections={ai} disabled={disabled} />}
+        {admin && <IngestTokenCard ws={ws} project={project} />}
       </div>
       {runs.length > 0 && (
         <Card title="History">
@@ -62,7 +83,7 @@ export function ActionsPanel({ ws, project, dirty, selected, canEdit, valid }: {
 function PullRequestCard({ ws, project, files, disabled }: { ws: string; project: Project; files: string[]; disabled: boolean }) {
   const [target, setTarget] = useState(project.branch ?? "main");
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<{ url: string } | null>(null);
+  const [result, setResult] = useState<{ url: string; libraryUrl?: string; libraryNote?: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   if (!project.repository) {
     return (
@@ -75,7 +96,7 @@ function PullRequestCard({ ws, project, files, disabled }: { ws: string; project
     setBusy(true);
     setError(null);
     try {
-      setResult(await api<{ url: string }>(`workspaces/${ws}/pipelines/${project.id}/pull-request`, { method: "POST", body: { targetBranch: target, files: files.length ? files : null } }));
+      setResult(await api<{ url: string; libraryUrl?: string; libraryNote?: string }>(`workspaces/${ws}/pipelines/${project.id}/pull-request`, { method: "POST", body: { targetBranch: target, files: files.length ? files : null } }));
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -85,19 +106,233 @@ function PullRequestCard({ ws, project, files, disabled }: { ws: string; project
   return (
     <Card title="Pull request">
       <div className="flex flex-col gap-3">
-        <p className="text-sm text-muted">Creates a branch in {project.repository} with the files and opens a pull request.</p>
+        <p className="text-sm text-muted">
+          Creates a branch in {project.repository} with the files and opens a pull request
+          {project.config.layout === "sharedLibrary" && project.config.library.repository ? `, plus one in ${project.config.library.repository} for the library files` : ""}.
+        </p>
         <Field label="Target branch">
           <Input value={target} onChange={(e) => setTarget(e.target.value)} />
         </Field>
         <Button variant="primary" onClick={open} busy={busy} disabled={disabled}>
           Open pull request
         </Button>
-        {result && (
+        {result?.url && (
           <Alert tone="ok" title="Pull request opened">
             <a className="underline" href={result.url} target="_blank" rel="noreferrer noopener">
               {result.url}
             </a>
           </Alert>
+        )}
+        {result?.libraryUrl && (
+          <Alert tone="ok" title="Library pull request opened">
+            <a className="underline" href={result.libraryUrl} target="_blank" rel="noreferrer noopener">
+              {result.libraryUrl}
+            </a>
+          </Alert>
+        )}
+        {result?.libraryNote && <Alert tone="warn" title={result.libraryNote} />}
+        {error && <Alert tone="danger" title={error} />}
+      </div>
+    </Card>
+  );
+}
+
+const DRIFT_LABEL: Record<FileDrift["status"], { label: string; tone: "ok" | "warn" | "danger" | "neutral" | "accent" }> = {
+  identical: { label: "up to date", tone: "ok" },
+  changed: { label: "changed", tone: "warn" },
+  customised: { label: "edited by hand", tone: "danger" },
+  missing: { label: "missing", tone: "accent" },
+  unavailable: { label: "not read", tone: "neutral" },
+};
+
+function DriftCard({ ws, project, disabled, onSelect }: { ws: string; project: Project; disabled: boolean; onSelect: (paths: string[]) => void }) {
+  const [drift, setDrift] = useState<FileDrift[] | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function compare() {
+    setBusy(true);
+    setError(null);
+    try {
+      setDrift(await api<FileDrift[]>(`workspaces/${ws}/pipelines/${project.id}/drift`));
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const outdated = drift?.filter((d) => d.status === "changed" || d.status === "customised" || d.status === "missing") ?? [];
+  return (
+    <Card title="Compare with repository">
+      <div className="flex flex-col gap-3">
+        <p className="text-sm text-muted">
+          Compares the generated files with {project.repository}
+          {project.branch ? ` (${project.branch})` : ""}. Select the changed files and open a pull request to update an existing pipeline.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={compare} busy={busy} disabled={disabled}>
+            Compare
+          </Button>
+          {outdated.length > 0 && <Button onClick={() => onSelect(outdated.map((d) => d.path))}>Select {outdated.length} changed file(s)</Button>}
+        </div>
+        {drift && outdated.length === 0 && <Alert tone="ok" title="The repository is up to date with this pipeline." />}
+        {drift && (
+          <ul className="flex flex-col gap-1 text-sm">
+            {drift
+              .filter((d) => d.status !== "identical")
+              .map((d) => (
+                <li key={d.path} className="flex flex-col gap-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge tone={DRIFT_LABEL[d.status].tone}>{DRIFT_LABEL[d.status].label}</Badge>
+                    {d.diff ? (
+                      <button type="button" className="text-left underline" onClick={() => setOpen(open === d.path ? null : d.path)}>
+                        <code className="text-xs">{d.path}</code>
+                      </button>
+                    ) : (
+                      <code className="text-xs">{d.path}</code>
+                    )}
+                    {d.repositoryVersion && <span className="text-xs text-muted">from version {d.repositoryVersion}</span>}
+                    {d.note && <span className="text-xs text-muted">{d.note}</span>}
+                  </div>
+                  {open === d.path && d.diff && <DiffView diff={d.diff} />}
+                </li>
+              ))}
+          </ul>
+        )}
+        {error && <Alert tone="danger" title={error} />}
+      </div>
+    </Card>
+  );
+}
+
+function DiffView({ diff }: { diff: string }) {
+  return (
+    <pre className="max-h-96 overflow-auto rounded-md border border-border bg-code p-2 text-xs leading-5">
+      {diff.split("\n").map((line, i) => (
+        <div
+          key={i}
+          className={line.startsWith("+") && !line.startsWith("+++") ? "text-ok" : line.startsWith("-") && !line.startsWith("---") ? "text-danger" : line.startsWith("@@") ? "text-muted" : undefined}
+        >
+          {line || " "}
+        </div>
+      ))}
+    </pre>
+  );
+}
+
+function IngestTokenCard({ ws, project }: { ws: string; project: Project }) {
+  const [tokens, setTokens] = useState<IngestToken[]>([]);
+  const [created, setCreated] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const base = `workspaces/${ws}/pipelines/${project.id}/ingest-tokens`;
+  useEffect(() => {
+    api<IngestToken[]>(base).then(setTokens, (e) => setError(errorMessage(e)));
+  }, [base]);
+  async function create() {
+    setError(null);
+    try {
+      const r = await api<{ token: string }>(base, { method: "POST" });
+      setCreated(r.token);
+      setTokens(await api<IngestToken[]>(base));
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
+  async function revoke(id: string) {
+    setError(null);
+    try {
+      await api(`${base}/${id}`, { method: "DELETE" });
+      setTokens(await api<IngestToken[]>(base));
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
+  return (
+    <Card title="Delivery metrics token">
+      <div className="flex flex-col gap-3">
+        <p className="text-sm text-muted">
+          Jenkins reports each deploy with this token. Store it as the secret text credential <code>{project.config.metrics.tokenCredentialId}</code>; it can only report deploys for this pipeline.
+        </p>
+        <Button onClick={create}>Create token</Button>
+        {created && (
+          <Alert tone="ok" title="Copy the token now; it is not shown again">
+            <code className="break-all text-xs">{created}</code>
+          </Alert>
+        )}
+        {tokens.length > 0 && (
+          <ul className="flex flex-col gap-1 text-sm">
+            {tokens.map((t) => (
+              <li key={t.id} className="flex flex-wrap items-center gap-2">
+                <code className="text-xs">{t.prefix}…</code>
+                <span className="text-muted">{t.lastUsedAt ? `last used ${new Date(t.lastUsedAt).toLocaleString()}` : "never used"}</span>
+                {t.revokedAt ? (
+                  <Badge tone="danger">revoked</Badge>
+                ) : (
+                  <Button variant="ghost" onClick={() => revoke(t.id)}>
+                    Revoke
+                  </Button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+        {error && <Alert tone="danger" title={error} />}
+      </div>
+    </Card>
+  );
+}
+
+type BranchRuleResult = { branch: string; rule: string; ok: boolean; message: string };
+
+function BranchProtectionCard({ ws, project, disabled }: { ws: string; project: Project; disabled: boolean }) {
+  const [branches, setBranches] = useState(() => [...new Set(project.config.environments.map((e) => e.branchPattern))].join(", "));
+  const [approvals, setApprovals] = useState("1");
+  const [busy, setBusy] = useState(false);
+  const [results, setResults] = useState<BranchRuleResult[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  async function apply() {
+    setBusy(true);
+    setError(null);
+    try {
+      const list = branches.split(",").map((b) => b.trim()).filter(Boolean);
+      setResults(
+        await api<BranchRuleResult[]>(`workspaces/${ws}/pipelines/${project.id}/branch-protection`, {
+          method: "POST",
+          body: { branches: list, approvals: Number(approvals) || 0 },
+        }),
+      );
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Card title="Require the Jenkins build before merge">
+      <div className="flex flex-col gap-3">
+        <p className="text-sm text-muted">
+          Protects the deploy branches in {project.repository}: changes only through pull requests, a green Jenkins build and approvals, no force pushes. The token needs admin rights on the repository.
+        </p>
+        <Field label="Branches" hint="Comma separated; defaults to the environment branches.">
+          <Input value={branches} onChange={(e) => setBranches(e.target.value)} />
+        </Field>
+        <Field label="Required approvals">
+          <Input type="number" min={0} max={10} value={approvals} onChange={(e) => setApprovals(e.target.value)} />
+        </Field>
+        <Button onClick={apply} busy={busy} disabled={disabled}>
+          Apply branch rules
+        </Button>
+        {results && (
+          <ul className="flex flex-col gap-1 text-sm">
+            {results.map((r, i) => (
+              <li key={i} className="flex flex-wrap items-center gap-2">
+                <Badge tone={r.ok ? "ok" : "danger"}>{r.ok ? "ok" : "failed"}</Badge>
+                <code className="text-xs">{r.branch}</code>
+                <span>{r.rule}</span>
+                <span className="text-muted">{r.message}</span>
+              </li>
+            ))}
+          </ul>
         )}
         {error && <Alert tone="danger" title={error} />}
       </div>
@@ -109,6 +344,7 @@ function JenkinsCard({ ws, project, connections, disabled }: { ws: string; proje
   const [conn, setConn] = useState("");
   const [jobName, setJobName] = useState(project.name);
   const [scmCred, setScmCred] = useState("scm-credentials");
+  const [scheduled, setScheduled] = useState(project.config.security.dast.schedule.enabled);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const connectionId = conn || connections[0]?.id || "";
@@ -136,8 +372,8 @@ function JenkinsCard({ ws, project, connections, disabled }: { ws: string; proje
   async function createJob() {
     setBusy("job");
     try {
-      const r = await api<{ url: string }>(`workspaces/${ws}/pipelines/${project.id}/jenkins-job`, { method: "POST", body: { jenkinsConnectionId: connectionId, jobName, scmCredentialId: scmCred } });
-      setMessage({ ok: true, text: `Job ready: ${r.url}` });
+      const r = await api<{ url: string; scheduledUrl?: string }>(`workspaces/${ws}/pipelines/${project.id}/jenkins-job`, { method: "POST", body: { jenkinsConnectionId: connectionId, jobName, scmCredentialId: scmCred, createScheduledJob: scheduled } });
+      setMessage({ ok: true, text: `Job ready: ${r.url}${r.scheduledUrl ? `\nScheduled scans: ${r.scheduledUrl}` : ""}` });
     } catch (e) {
       setMessage({ ok: false, text: errorMessage(e) });
     } finally {
@@ -164,6 +400,11 @@ function JenkinsCard({ ws, project, connections, disabled }: { ws: string; proje
                 <Input value={scmCred} onChange={(e) => setScmCred(e.target.value)} />
               </Field>
             </div>
+            {project.config.security.dast.schedule.enabled && (
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={scheduled} onChange={(e) => setScheduled(e.target.checked)} /> Also create the scheduled-scans job (Jenkinsfile.scheduled)
+              </label>
+            )}
             <Button onClick={createJob} busy={busy === "job"} disabled={disabled}>
               Create or update multibranch job
             </Button>

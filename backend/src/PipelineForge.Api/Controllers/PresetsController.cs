@@ -12,6 +12,15 @@ using PipelineForge.Infrastructure.Persistence;
 namespace PipelineForge.Api.Controllers;
 
 [ApiController]
+[Route("api/presets/built-in")]
+public sealed class BuiltInPresetsController : ControllerBase
+{
+    [HttpGet]
+    public IReadOnlyList<BuiltInPresetDto> List() =>
+        Core.Presets.BuiltInPresets.All.Select(p => new BuiltInPresetDto(p.Id, p.Name, p.Description, JsonDocument.Parse(p.ConfigJson).RootElement.Clone())).ToList();
+}
+
+[ApiController]
 [Route("api/workspaces/{workspaceId:guid}/presets")]
 public sealed partial class PresetsController(AppDbContext db, ICurrentUser currentUser, Auditor audit) : ControllerBase
 {

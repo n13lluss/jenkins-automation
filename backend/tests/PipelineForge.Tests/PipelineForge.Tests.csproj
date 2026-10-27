@@ -24,6 +24,7 @@
     <ProjectReference Include="..\..\src\PipelineForge.Core\PipelineForge.Core.csproj" />
     <ProjectReference Include="..\..\src\PipelineForge.Infrastructure\PipelineForge.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\PipelineForge.Api\PipelineForge.Api.csproj" />
+    <ProjectReference Include="..\..\src\PipelineForge.Cli\PipelineForge.Cli.csproj" />
   </ItemGroup>
 
 </Project>

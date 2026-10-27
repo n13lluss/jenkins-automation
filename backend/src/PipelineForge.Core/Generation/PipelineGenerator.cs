@@ -24,10 +24,12 @@ public static class PipelineGenerator
 
     /// <param name="config">Not modified; compliance changes are applied to a copy.</param>
     /// <param name="onlyFiles">Return just these paths (all files when null or empty).</param>
-    public static GenerationResult Generate(PipelineConfig config, IReadOnlyCollection<string>? onlyFiles = null)
+    /// <param name="inRepoLayout">Generate the in-repository layout even for a shared library pipeline, e.g. to lint the full Jenkinsfile.</param>
+    public static GenerationResult Generate(PipelineConfig config, IReadOnlyCollection<string>? onlyFiles = null, bool inRepoLayout = false)
     {
         var c = Clone(config);
         var compliance = ComplianceEnforcer.Apply(c);
+        if (inRepoLayout) c.Layout = PipelineLayout.InRepo;
         var errors = ConfigValidator.Validate(c);
         if (errors.Count > 0) return new([], errors, compliance, [], [], c);
 
@@ -48,7 +50,29 @@ public static class PipelineGenerator
         if (c.Quality.Enabled) Add("jenkins/stages/quality.groovy", StageScriptsWriter.Quality(ctx));
         Add("jenkins/stages/security.groovy", StageScriptsWriter.Security(ctx));
         if (ctx.ImageModules.Count > 0 || ctx.DeployEnvironments.Count > 0) Add("jenkins/stages/deploy.groovy", StageScriptsWriter.Deploy(ctx));
-        if (ctx.HasDast) Add("jenkins/stages/dast.groovy", StageScriptsWriter.Dast(ctx));
+        if (JenkinsfileWriter.HasDynamicTests(ctx)) Add("jenkins/stages/dast.groovy", StageScriptsWriter.Dast(ctx));
+        if (ctx.Scheduled) Add("Jenkinsfile.scheduled", WorkflowFilesWriter.ScheduledJenkinsfile(ctx));
+        if (ctx.Ticketing)
+        {
+            Add("jenkins/stages/tickets.groovy", WorkflowFilesWriter.Tickets(ctx));
+            Add("jenkins/scripts/collect_findings.py", WorkflowScripts.CollectFindings);
+        }
+        if (ctx.Authenticated)
+        {
+            Add("jenkins/scripts/access_control_check.py", WorkflowScripts.AccessControlCheck);
+            Add("security/zap/auth-plan.yaml", WorkflowFilesWriter.ZapAuthPlan(ctx));
+            Add("security/zap/admin-paths.txt", WorkflowFilesWriter.AdminPaths(ctx));
+        }
+        if (ctx.RateLimit) Add("jenkins/scripts/rate_limit_check.py", WorkflowScripts.RateLimitCheck);
+        if (ctx.Pinning) Add("security/maven-enforcer.xml", WorkflowFilesWriter.EnforcerSnippet);
+        if (ctx.DockerfileLint) Add("security/.hadolint.yaml", WorkflowFilesWriter.Hadolint(ctx));
+        if (ctx.Attestations) Add("jenkins/scripts/provenance.py", WorkflowScripts.Provenance);
+        if (ctx.ClusterPolicy) Add("deploy/policies/kyverno-policies.yaml", WorkflowFilesWriter.KyvernoPolicies(ctx));
+        if (ctx.Proxy is { } proxy && proxy.MavenPath is not null)
+        {
+            if (c.Modules.Any(m => m.Ecosystem == Ecosystem.Maven)) Add("jenkins/config/maven-settings.xml", WorkflowFilesWriter.MavenSettings(ctx));
+            if (c.Modules.Any(m => m.Ecosystem == Ecosystem.Gradle)) Add("jenkins/config/proxy.init.gradle", WorkflowFilesWriter.GradleInit);
+        }
         if (c.AiReview.Enabled)
         {
             Add("jenkins/stages/ai-review.groovy", StageScriptsWriter.AiReview(ctx));
@@ -56,10 +80,19 @@ public static class PipelineGenerator
         }
         if (c.Quality.Enabled && ctx.SonarMode == SonarMode.Cli) Add("sonar-project.properties", SupportFilesWriter.SonarProperties(ctx));
         if (c.Security.SecretScan) Add("security/.gitleaks.toml", SupportFilesWriter.GitleaksToml);
-        if (ctx.UsesTrivy) Add("security/.trivyignore", SupportFilesWriter.TrivyIgnore);
-        if (c.Security.DependencyScanners.Contains(DependencyScanner.OwaspDependencyCheck))
-            Add("security/dependency-check-suppressions.xml", SupportFilesWriter.DependencyCheckSuppressions);
-        if (ctx.HasDast) Add("security/zap-rules.tsv", SupportFilesWriter.ZapRules(ctx));
+        if (ctx.Exceptions)
+        {
+            // The ignore files are rendered from the register on every build.
+            Add("security/exceptions.yaml", ExceptionsWriter.Register(ctx));
+            Add("jenkins/scripts/exceptions.py", ExceptionsWriter.Script);
+        }
+        else
+        {
+            if (ctx.UsesTrivy) Add("security/.trivyignore", SupportFilesWriter.TrivyIgnore);
+            if (c.Security.DependencyScanners.Contains(DependencyScanner.OwaspDependencyCheck))
+                Add("security/dependency-check-suppressions.xml", SupportFilesWriter.DependencyCheckSuppressions);
+        }
+        if (ctx.HasDast || ctx.Ephemeral || ctx.Scheduled) Add("security/zap-rules.tsv", SupportFilesWriter.ZapRules(ctx));
 
         var helmEnvs = ctx.DeployEnvironments.Where(e => e.Deploy.Type == DeployTargetType.Helm).ToList();
         foreach (var e in helmEnvs) Add($"deploy/helm/values-{e.Key}.yaml", SupportFilesWriter.HelmValues(ctx, e));
@@ -67,13 +100,18 @@ public static class PipelineGenerator
         {
             Add($"{DefaultChartPath}/Chart.yaml", SupportFilesWriter.HelmChartYaml(ctx));
             Add($"{DefaultChartPath}/templates/app.yaml", SupportFilesWriter.HelmDeploymentTemplate);
+            if (helmEnvs.Any(e => e.AppSecrets is not null))
+                Add($"{DefaultChartPath}/templates/externalsecret.yaml", SupportFilesWriter.HelmExternalSecretTemplate);
         }
         foreach (var e in ctx.DeployEnvironments.Where(e => e.Deploy.Type == DeployTargetType.DockerSsh))
             Add($"deploy/docker/compose.{e.Key}.yml", SupportFilesWriter.Compose(ctx, e));
 
         if (ctx.IsIso) Add("docs/iso27001-evidence.md", DocsWriter.IsoEvidence(ctx));
+        if (ctx.Library) files = LibraryWriter.Split(ctx, files);
         var paths = files.Select(f => f.Path).Append("docs/PIPELINE.md").ToList();
         Add("docs/PIPELINE.md", DocsWriter.Pipeline(ctx, paths));
+
+        files = files.Select(f => f with { Content = Drift.VersionMarker.Apply(f.Path, f.Content) }).ToList();
 
         if (onlyFiles is { Count: > 0 })
         {
