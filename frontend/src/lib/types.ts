@@ -77,6 +77,14 @@ export type AppSecrets = {
   keys: { name: string; remoteKey: string; property?: string | null }[];
 };
 
+export type NotifyEvent = "failure" | "fixed" | "approval" | "productionDeployed";
+export type Notifications = {
+  slack: { enabled: boolean; channel: string; tokenCredentialId?: string | null };
+  teams: { enabled: boolean; webhookCredentialId: string };
+  email: { enabled: boolean; recipients: string[] };
+  events: NotifyEvent[];
+};
+
 export type MigrationTool = "none" | "inApp" | "flyway" | "liquibase";
 
 export type PipelineLayout = "inRepo" | "sharedLibrary";
@@ -163,6 +171,7 @@ export type PipelineConfig = {
     pullRequestsOnly: boolean;
   };
   migrations: { tool: MigrationTool; path: string };
+  notifications: Notifications;
   customStages: { name: string; steps: string; origin: "user" | "imported" }[];
   options: { timeoutMinutes: number; buildsToKeep: number; disableConcurrentBuilds: boolean };
 };

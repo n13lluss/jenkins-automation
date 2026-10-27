@@ -157,6 +157,12 @@ export function blankConfig(name = "app"): PipelineConfig {
     },
     customStages: [],
     migrations: { tool: "none", path: "src/main/resources/db/migration" },
+    notifications: {
+      slack: { enabled: false, channel: "#deployments", tokenCredentialId: null },
+      teams: { enabled: false, webhookCredentialId: "teams-webhook" },
+      email: { enabled: false, recipients: [] },
+      events: ["failure", "fixed", "approval", "productionDeployed"],
+    },
     options: { timeoutMinutes: 60, buildsToKeep: 20, disableConcurrentBuilds: true },
   };
 }

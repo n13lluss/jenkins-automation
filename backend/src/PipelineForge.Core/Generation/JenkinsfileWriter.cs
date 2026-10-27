@@ -35,6 +35,7 @@ public static class JenkinsfileWriter
                 foreach (var e in c.Environments.Where(e => e.Deploy.Type != DeployTargetType.None))
                     WriteEnvironmentStages(w, ctx, e);
             });
+            NotificationsWriter.Post(w, ctx);
         }));
         return w.ToString();
     }
@@ -50,12 +51,15 @@ public static class JenkinsfileWriter
         {
             w.Line($"def {string.Join(", ", modules)}").Line("def envs = [:]").Line();
             pipeline();
-            return;
         }
-        w.Line("import groovy.transform.Field").Line();
-        foreach (var m in modules) w.Line($"@Field def {m}");
-        w.Line("@Field def envs = [:]").Line();
-        w.Block("def call()", pipeline);
+        else
+        {
+            w.Line("import groovy.transform.Field").Line();
+            foreach (var m in modules) w.Line($"@Field def {m}");
+            w.Line("@Field def envs = [:]").Line();
+            w.Block("def call()", pipeline);
+        }
+        if (ctx.Notifications) NotificationsWriter.Method(w, ctx);
     }
 
     /// <summary>
@@ -197,6 +201,8 @@ public static class JenkinsfileWriter
                 w.Block("steps", () =>
                 {
                     var submitter = c.Compliance.ApproverGroup;
+                    if (ctx.Notify(NotifyEvent.Approval))
+                        w.Block("script", () => w.Line($"pfNotify('approval', {Quote($"Waiting for approval to deploy to {e.DisplayName}")})"));
                     w.Line($"input message: {Quote($"Deploy {c.Name} to {e.DisplayName}?")}, ok: 'Deploy', submitter: {Quote(submitter)}");
                 });
             });
@@ -212,7 +218,14 @@ public static class JenkinsfileWriter
                 Materialize(w, ctx);
                 w.Line($"delivery.deploy(common, {envRef})");
             }));
-            if (!ctx.IsKubernetes) w.Block("post", () => w.Block("cleanup", () => w.Line("cleanWs()")));
+            var notifyDeployed = ctx.Notify(NotifyEvent.ProductionDeployed) && Compliance.ComplianceEnforcer.IsProduction(e);
+            if (notifyDeployed || !ctx.IsKubernetes)
+                w.Block("post", () =>
+                {
+                    if (notifyDeployed)
+                        w.Block("success", () => w.Block("script", () => w.Line($"pfNotify('deployed', {Quote($"Deployed {c.Name} to {e.DisplayName}")})")));
+                    if (!ctx.IsKubernetes) w.Block("cleanup", () => w.Line("cleanWs()"));
+                });
         });
 
         if (ctx.HasDast && c.Security.Dast.Environments.Contains(e.Key))

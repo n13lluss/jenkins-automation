@@ -41,7 +41,7 @@ const STEPS: Step[] = [
     ),
   },
   { id: "dynamic", label: "Dynamic testing", prefixes: ["security.dast.ephemeral", "security.dast.authenticated", "security.dast.schedule", "rateLimit"], render: (p) => <DynamicTestingSection {...p} /> },
-  { id: "operations", label: "Operations", prefixes: ["migrations", "security.exceptionRegister"], render: (p) => <OperationsSection {...p} /> },
+  { id: "operations", label: "Operations", prefixes: ["migrations", "notifications", "security.exceptionRegister"], render: (p) => <OperationsSection {...p} /> },
   { id: "ai", label: "AI review", prefixes: ["aiReview"], render: (p) => <AiSection {...p} /> },
   { id: "tickets", label: "Tickets", prefixes: ["ticketing"], render: (p) => <TicketsSection {...p} /> },
   { id: "custom", label: "Custom stages", prefixes: ["customStages"], render: (p) => <CustomStagesSection {...p} /> },

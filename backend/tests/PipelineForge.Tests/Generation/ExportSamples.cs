@@ -22,6 +22,8 @@ public class ExportSamples
                      ("library-docker", SharedLibraryTests.Library(PipelineForge.Core.Model.AgentType.Docker)),
                      ("safe-k8s-flyway", DeploySafetyTests.Safe()),
                      ("exceptions-docker", ExceptionRegisterTests.Register(PipelineForge.Core.Model.AgentType.Docker)),
+                     ("notify-k8s", NotificationTests.Notifying()),
+                     ("notify-library-docker", NotificationTests.Notifying(PipelineForge.Core.Model.AgentType.Docker, PipelineForge.Core.Model.PipelineLayout.SharedLibrary)),
                      ("safe-docker-liquibase", DeploySafetyTests.Safe(PipelineForge.Core.Model.AgentType.Docker, PipelineForge.Core.Model.MigrationTool.Liquibase)),
                  })
         {

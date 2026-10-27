@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import type { AppSecrets, EnvironmentConfig, MigrationTool } from "@/lib/types";
+import type { AppSecrets, EnvironmentConfig, MigrationTool, NotifyEvent } from "@/lib/types";
 import { Alert, Button, Card, Field, Input, Select, Toggle } from "../ui";
 import type { SectionProps } from "./sections";
 
@@ -133,11 +133,75 @@ function AppSecretsEditor({ secrets: s, prefix, error, readOnly, set }: { secret
   );
 }
 
-export function OperationsSection({ config: c, update, error, locked, readOnly }: SectionProps) {
+const EVENTS: { value: NotifyEvent; label: string }[] = [
+  { value: "failure", label: "Build failed" },
+  { value: "fixed", label: "Back to normal" },
+  { value: "approval", label: "Waiting for approval" },
+  { value: "productionDeployed", label: "Deployed to production" },
+];
+
+function NotificationsCard({ config: c, update, error, locked, readOnly }: SectionProps) {
+  const n = c.notifications;
+  const ro = readOnly || locked("notifications");
+  return (
+    <Card title="Notifications">
+      <div className="flex flex-col gap-3">
+        <Grid>
+          <Toggle label="Slack" checked={n.slack.enabled} disabled={ro} onChange={(v) => update((d) => void (d.notifications.slack.enabled = v))} />
+          <Toggle label="Microsoft Teams (Workflows webhook)" checked={n.teams.enabled} disabled={ro} onChange={(v) => update((d) => void (d.notifications.teams.enabled = v))} />
+          <Toggle label="E-mail" checked={n.email.enabled} disabled={ro} onChange={(v) => update((d) => void (d.notifications.email.enabled = v))} />
+        </Grid>
+        {(n.slack.enabled || n.teams.enabled || n.email.enabled) && (
+          <Grid>
+            {n.slack.enabled && (
+              <>
+                <Field label="Slack channel" error={error("notifications.slack.channel")}>
+                  <Input value={n.slack.channel} disabled={ro} onChange={(e) => update((d) => void (d.notifications.slack.channel = e.target.value.trim()))} />
+                </Field>
+                <Field label="Slack token credential ID (optional)" hint="Empty uses the Slack plugin's global settings." error={error("notifications.slack.tokenCredentialId")}>
+                  <Input value={n.slack.tokenCredentialId ?? ""} disabled={ro} onChange={(e) => update((d) => void (d.notifications.slack.tokenCredentialId = e.target.value.trim() || null))} />
+                </Field>
+              </>
+            )}
+            {n.teams.enabled && (
+              <Field label="Teams webhook credential ID" hint="Secret text with the webhook URL." error={error("notifications.teams.webhookCredentialId")}>
+                <Input value={n.teams.webhookCredentialId} disabled={ro} onChange={(e) => update((d) => void (d.notifications.teams.webhookCredentialId = e.target.value.trim()))} />
+              </Field>
+            )}
+            {n.email.enabled && (
+              <Field label="Recipients" hint="Comma separated." error={error("notifications.email.recipients")}>
+                <Input
+                  value={n.email.recipients.join(", ")}
+                  disabled={ro}
+                  onChange={(e) => update((d) => void (d.notifications.email.recipients = e.target.value.split(",").map((r) => r.trim()).filter(Boolean)))}
+                />
+              </Field>
+            )}
+          </Grid>
+        )}
+        <div className="flex flex-wrap gap-4">
+          {EVENTS.map((ev) => (
+            <Toggle
+              key={ev.value}
+              label={ev.label}
+              checked={n.events.includes(ev.value)}
+              disabled={ro}
+              onChange={(v) => update((d) => void (d.notifications.events = v ? [...d.notifications.events, ev.value] : d.notifications.events.filter((x) => x !== ev.value)))}
+            />
+          ))}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+export function OperationsSection(props: SectionProps) {
+  const { config: c, update, error, locked, readOnly } = props;
   const m = c.migrations;
   const ro = readOnly || locked("migrations");
   return (
     <div className="flex flex-col gap-4">
+      <NotificationsCard {...props} />
       <Card title="Accepted risks">
         <Toggle
           label="Keep accepted risks in one register"

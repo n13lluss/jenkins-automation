@@ -448,6 +448,7 @@ public static class WorkflowFilesWriter
                         if (!ctx.IsKubernetes) w.Block("cleanup", () => w.Line("cleanWs()"));
                     });
                 }));
+            NotificationsWriter.Post(w, ctx);
         }));
         return w.ToString();
     }

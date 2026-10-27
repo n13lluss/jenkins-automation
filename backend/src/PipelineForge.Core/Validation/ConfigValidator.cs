@@ -39,6 +39,8 @@ public static partial class ConfigValidator
     [GeneratedRegex(@"^[A-Z_][A-Z0-9_]{0,63}$")] private static partial Regex EnvVarRx();
     [GeneratedRegex(@"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")] private static partial Regex SecretPathRx();
     [GeneratedRegex(@"^[0-9]{1,4}[smh]$")] private static partial Regex DurationRx();
+    [GeneratedRegex(@"^[#@]?[A-Za-z0-9._-]{1,80}$")] private static partial Regex SlackChannelRx();
+    [GeneratedRegex(@"^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$")] private static partial Regex EmailRx();
     [GeneratedRegex(@"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")] private static partial Regex RepositoryRx();
     [GeneratedRegex(@"^[A-Z_][A-Z0-9_]{0,63}=[A-Za-z0-9._:/,@=-]{0,200}$")] private static partial Regex AppEnvRx();
 
@@ -183,6 +185,18 @@ public static partial class ConfigValidator
                 Check(s.Dast.ApiSpec is not null && (IsHttpUrl(s.Dast.ApiSpec) || IsRelativePath(s.Dast.ApiSpec)),
                     "security.dast.apiSpec", "API scans need an OpenAPI URL or repository path.");
         }
+
+        var n = c.Notifications;
+        if (n.Slack.Enabled)
+        {
+            Check(SlackChannelRx().IsMatch(n.Slack.Channel), "notifications.slack.channel", "A channel such as #deployments.");
+            if (n.Slack.TokenCredentialId is { } token) Check(IsIdentifier(token), "notifications.slack.tokenCredentialId", "Invalid credential ID.");
+        }
+        if (n.Teams.Enabled) Check(IsIdentifier(n.Teams.WebhookCredentialId), "notifications.teams.webhookCredentialId", "Invalid credential ID.");
+        if (n.Email.Enabled)
+            Check(n.Email.Recipients.Count is >= 1 and <= 20 && n.Email.Recipients.All(r => EmailRx().IsMatch(r)),
+                "notifications.email.recipients", "Between 1 and 20 e-mail addresses.");
+        Check(n.Events.Distinct().Count() == n.Events.Count, "notifications.events", "Each event once.");
 
         if (c.Migrations.Tool is MigrationTool.Flyway or MigrationTool.Liquibase)
         {

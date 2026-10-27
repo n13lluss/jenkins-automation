@@ -33,6 +33,12 @@ public sealed class GenerationContext
     public IReadOnlySet<string> PromotionSources => DeployEnvironments.Where(e => e.PromoteFrom is not null).Select(e => e.PromoteFrom!).ToHashSet();
     public bool Promotion => PromotionSources.Count > 0;
     public bool Migrations => Config.Migrations.Tool is MigrationTool.Flyway or MigrationTool.Liquibase && DeployEnvironments.Any(e => e.Database is not null);
+    public bool Notify(NotifyEvent e)
+    {
+        var n = Config.Notifications;
+        return (n.Slack.Enabled || n.Teams.Enabled || n.Email.Enabled) && n.Events.Contains(e);
+    }
+    public bool Notifications => Enum.GetValues<NotifyEvent>().Any(Notify);
     public bool Exceptions => Config.Security.ExceptionRegister;
     /// <summary>Post-deploy scans that read ignore lists and so need the rendered exception files.</summary>
     public bool ExceptionsOnDeployAgents => Exceptions && (HasDast || Scheduled || Authenticated);

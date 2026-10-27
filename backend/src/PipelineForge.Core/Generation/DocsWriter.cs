@@ -25,6 +25,10 @@ public static class DocsWriter
         plugins.Add(ctx.IsKubernetes ? "kubernetes (pod agents)" : "docker-workflow (Docker agents)");
         if (!ctx.IsKubernetes) plugins.Add("ws-cleanup");
         if (ctx.Library) plugins.Add("pipeline-groovy-lib (shared libraries)");
+        var n = c.Notifications;
+        if (ctx.Notifications && n.Slack.Enabled) plugins.Add("slack (Slack Notification; configure the workspace under Manage Jenkins → System)");
+        if (ctx.Notifications && n.Teams.Enabled) plugins.Add("http_request (Teams Workflows webhook)");
+        if (ctx.Notifications && n.Email.Enabled) plugins.Add("email-ext (Email Extension; configure SMTP under Manage Jenkins → System)");
         if (c.Quality.Enabled) plugins.Add("sonar (SonarQube Scanner for Jenkins)");
         if (ctx.DeployEnvironments.Any(e => e.Deploy.Type == DeployTargetType.DockerSsh)) plugins.Add("ssh-agent");
         if (ctx.DeployEnvironments.Any(e => e.Deploy.Type == DeployTargetType.AzureAppService)) plugins.Add("azure-credentials");
@@ -43,6 +47,10 @@ public static class DocsWriter
         if (c.Registry is { } reg && ctx.ImageModules.Count > 0) Add(reg.CredentialId, "Username with password", $"Push images to {reg.Host}");
         if (c.Security.DependencyScanners.Contains(DependencyScanner.OwaspDependencyCheck)) Add(c.Security.NvdApiKeyCredentialId, "Secret text", "NVD API key for OWASP Dependency-Check");
         if (c.Security.DependencyScanners.Contains(DependencyScanner.Snyk)) Add(c.Security.SnykCredentialId, "Secret text", "Snyk API token");
+        if (ctx.Notifications && c.Notifications.Teams.Enabled)
+            Add(c.Notifications.Teams.WebhookCredentialId, "Secret text", "Teams Workflows webhook URL (treat it as a secret)");
+        if (ctx.Notifications && c.Notifications.Slack is { Enabled: true, TokenCredentialId: { } slackToken })
+            Add(slackToken, "Secret text", "Slack bot token");
         if (c.AiReview.Enabled) Add(c.AiReview.CredentialId, "Secret text", $"API key for the AI review ({c.AiReview.Provider})");
         if (ctx.UsesSnyk || ctx.SnykMonitor) Add(c.Security.SnykCredentialId, "Secret text", "Snyk API token");
         if (c.DependencyProxy is { } proxy) Add(proxy.CredentialId, "Username with password", $"Read access to the {proxy.Type} repository manager");

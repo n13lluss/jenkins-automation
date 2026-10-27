@@ -19,6 +19,7 @@ public static class ComplianceEnforcer
         new("A.8.4", "Access to source code", "The pipeline lives in a protected shared library; application branches cannot change its stages, scripts or deploy targets."),
         new("A.8.9", "Configuration management", "Infrastructure-as-code scanning; environments are versioned in jenkins/config/environments.yaml."),
         new("A.8.15", "Logging", "All scan reports are archived with fingerprints and published as SARIF."),
+        new("A.8.16", "Monitoring activities", "Failed builds and production deploys are notified to the team (Slack, Teams or e-mail)."),
         new("A.8.25", "Secure development life cycle", "Quality gate enforced before anything is built into an image."),
         new("A.8.28", "Secure coding", "Static analysis (SonarQube/SonarCloud) and secret scanning on every branch and pull request."),
         new("A.8.29", "Security testing in development and acceptance", "DAST (OWASP ZAP) against test/acceptance environments; optional authenticated two-role access-control scan."),
@@ -81,6 +82,14 @@ public static class ComplianceEnforcer
             {
                 warnings.Add("A.8.29: no test or acceptance environment with a URL, so DAST cannot run. Add a URL to enable it.");
             }
+        }
+        var n = c.Notifications;
+        if (!(n.Slack.Enabled || n.Teams.Enabled || n.Email.Enabled))
+            warnings.Add("A.8.16: no notification channel is set, so failed builds and production deploys go unnoticed. Add Slack, Teams or e-mail.");
+        else
+        {
+            foreach (var e in new[] { NotifyEvent.Failure, NotifyEvent.ProductionDeployed })
+                Set(n.Events.Contains(e), () => n.Events.Add(e), $"A.8.16: notify on {(e == NotifyEvent.Failure ? "failed builds" : "production deploys")}.");
         }
         if (deploying.Count == 0)
             warnings.Add("A.8.31: no deploy environments configured; DTAP separation cannot be shown by this pipeline.");

@@ -28,6 +28,39 @@ public sealed class PipelineConfig
     public List<CustomStage> CustomStages { get; set; } = [];
     public PipelineOptions Options { get; set; } = new();
     public MigrationConfig Migrations { get; set; } = new();
+    public NotificationConfig Notifications { get; set; } = new();
+}
+
+public enum NotifyEvent { Failure, Fixed, Approval, ProductionDeployed }
+
+/// <summary>Build notifications; sent from the controller, so no agent is needed when a build fails early.</summary>
+public sealed class NotificationConfig
+{
+    public SlackNotification Slack { get; set; } = new();
+    public TeamsNotification Teams { get; set; } = new();
+    public EmailNotification Email { get; set; } = new();
+    public List<NotifyEvent> Events { get; set; } = [NotifyEvent.Failure, NotifyEvent.Fixed, NotifyEvent.Approval, NotifyEvent.ProductionDeployed];
+}
+
+public sealed class SlackNotification
+{
+    public bool Enabled { get; set; }
+    public string Channel { get; set; } = "#deployments";
+    /// <summary>Optional secret text; otherwise the Slack plugin's global configuration is used.</summary>
+    public string? TokenCredentialId { get; set; }
+}
+
+public sealed class TeamsNotification
+{
+    public bool Enabled { get; set; }
+    /// <summary>Secret text holding the Teams Workflows webhook URL.</summary>
+    public string WebhookCredentialId { get; set; } = "teams-webhook";
+}
+
+public sealed class EmailNotification
+{
+    public bool Enabled { get; set; }
+    public List<string> Recipients { get; set; } = [];
 }
 
 public enum PipelineLayout { InRepo, SharedLibrary }
