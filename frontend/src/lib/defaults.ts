@@ -38,6 +38,8 @@ export function defaultDeploy(app: string, key: string): DeployTarget {
     host: "",
     user: "deploy",
     remoteDir: `/opt/${app}`,
+    bindAddress: "127.0.0.1",
+    hostPort: 8080,
     azureCredentialId: "azure-sp",
     resourceGroup: "",
     appName: `${app}-${key}`,

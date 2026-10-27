@@ -437,6 +437,12 @@ public sealed class DeployTarget
     public string Host { get; set; } = "";
     public string User { get; set; } = "deploy";
     public string RemoteDir { get; set; } = "/opt/app";
+    /// <summary>Host address the app's ports bind to; 127.0.0.1 keeps it behind a local reverse proxy.</summary>
+    public string BindAddress { get; set; } = "127.0.0.1";
+    /// <summary>First host port; further modules use the next ports.</summary>
+    public int HostPort { get; set; } = 8080;
+    /// <summary>Optional env file on the host (relative to RemoteDir) with the app's settings and secrets; never in the repository.</summary>
+    public string? EnvFile { get; set; }
 
     // Azure App Service
     public string AzureCredentialId { get; set; } = "azure-sp";

@@ -50,6 +50,9 @@ export type DeployTarget = {
   host: string;
   user: string;
   remoteDir: string;
+  bindAddress: string;
+  hostPort: number;
+  envFile?: string | null;
   azureCredentialId: string;
   resourceGroup: string;
   appName: string;

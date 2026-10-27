@@ -384,6 +384,10 @@ public static partial class ConfigValidator
                 check(IsHost(d.Host), $"{p}.host", "Invalid host.");
                 check(UnixUserRx().IsMatch(d.User), $"{p}.user", "Invalid user name.");
                 check(IsAbsolutePath(d.RemoteDir), $"{p}.remoteDir", "Must be an absolute path.");
+                check(System.Net.IPAddress.TryParse(d.BindAddress, out var bind) && bind.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork,
+                    $"{p}.bindAddress", "An IPv4 address such as 127.0.0.1.");
+                check(d.HostPort is >= 1024 and <= 65000, $"{p}.hostPort", "Between 1024 and 65000.");
+                if (d.EnvFile is not null) check(IsRelativePath(d.EnvFile) || IsAbsolutePath(d.EnvFile), $"{p}.envFile", "A file name such as app.env.");
                 break;
             case DeployTargetType.AzureAppService:
                 check(IsIdentifier(d.AzureCredentialId), $"{p}.azureCredentialId", "Invalid credential ID.");

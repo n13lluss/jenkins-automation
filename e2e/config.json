@@ -1,0 +1,64 @@
+{
+  "name": "orders",
+  "layout": "inRepo",
+  "agent": { "type": "docker", "dockerLabel": "docker" },
+  "modules": [
+    { "name": "orders", "path": ".", "ecosystem": "maven", "languageVersion": "21", "runTests": true, "coverage": false, "dockerfile": "Dockerfile", "imageName": "e2e/orders" }
+  ],
+  "registry": { "host": "__REGISTRY__", "credentialId": "registry-credentials" },
+  "quality": { "enabled": false },
+  "triggers": { "checks": "always", "package": "always" },
+  "security": {
+    "secretScan": true,
+    "secretScanScope": "history",
+    "dependencyScanners": ["trivyFs"],
+    "sbom": true,
+    "containerScan": true,
+    "containerScanner": "trivy",
+    "iacScan": false,
+    "failOnSeverity": "critical",
+    "dockerfileLint": true,
+    "allowedBaseRegistries": ["docker.io"],
+    "exceptionRegister": true,
+    "dast": {
+      "enabled": true,
+      "mode": "baseline",
+      "environments": ["test"],
+      "ephemeral": { "enabled": true, "containerPort": 8080, "healthPath": "/actuator/health" },
+      "authenticated": {
+        "enabled": true,
+        "environment": "test",
+        "userCredentialId": "zap-user",
+        "adminCredentialId": "zap-admin",
+        "protectedPath": "/",
+        "adminOnlyPaths": ["/admin"],
+        "beforeProduction": false
+      }
+    }
+  },
+  "signing": { "enabled": true, "keyCredentialId": "cosign-key", "passwordCredentialId": "cosign-password", "publicKeyPath": "security/cosign.pub", "transparencyLog": false },
+  "rateLimit": { "enabled": true, "testUsername": "pf-ratelimit-probe", "attempts": 20, "expectedStatuses": [429], "environments": ["test"] },
+  "environments": [
+    {
+      "key": "test",
+      "displayName": "Test",
+      "branchPattern": "develop",
+      "url": "http://__APP_HOST__:18080",
+      "requiresApproval": false,
+      "rollbackOnFailure": true,
+      "health": { "path": "/actuator/health", "expectedStatus": 200, "successes": 3, "timeoutSeconds": 240 },
+      "deploy": {
+        "type": "dockerSsh",
+        "host": "deploy-target",
+        "user": "deploy",
+        "remoteDir": "/opt/orders",
+        "sshCredentialId": "deploy-ssh",
+        "knownHostsCredentialId": "deploy-known-hosts",
+        "bindAddress": "0.0.0.0",
+        "hostPort": 18080,
+        "envFile": "app.env"
+      }
+    }
+  ],
+  "options": { "timeoutMinutes": 60, "buildsToKeep": 10, "disableConcurrentBuilds": true }
+}

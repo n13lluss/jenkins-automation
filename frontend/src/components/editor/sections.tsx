@@ -475,6 +475,13 @@ function EnvironmentCard({
             {text("host", "Host", "host or host:port")}
             {text("user", "SSH user")}
             {text("remoteDir", "Remote directory")}
+            {text("bindAddress", "Bind address", "127.0.0.1 keeps the app behind a reverse proxy on the host.")}
+            <Field label="Env file on the host (optional)" hint="App settings and secrets, e.g. app.env next to the compose file." error={error(`${p}.deploy.envFile`)}>
+              <Input value={d.envFile ?? ""} disabled={readOnly} onChange={(e) => setDeploy("envFile", e.target.value.trim() || null)} />
+            </Field>
+            <Field label="Host port" error={error(`${p}.deploy.hostPort`)}>
+              <Input type="number" value={d.hostPort} disabled={readOnly} onChange={(e) => setDeploy("hostPort", Number(e.target.value) || 8080)} />
+            </Field>
             {text("sshCredentialId", "SSH key credential ID")}
             {text("knownHostsCredentialId", "known_hosts credential ID", "Secret file with the pinned host key.")}
           </>

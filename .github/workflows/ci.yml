@@ -53,3 +53,68 @@ jobs:
       - name: Trivy (dependencies, IaC)
         run: |
           docker run --rm -v "$PWD:/repo" aquasec/trivy:0.67.2 fs --scanners vuln,misconfig --severity HIGH,CRITICAL --exit-code 1 /repo
+
+  manifests:
+    runs-on: ubuntu-24.04
+    needs: backend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.19.0
+      - name: Install kubeconform
+        run: |
+          curl -fsSL -o /tmp/kc.tgz https://github.com/yannh/kubeconform/releases/download/v0.7.0/kubeconform-linux-amd64.tar.gz
+          echo "$(curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.7.0/CHECKSUMS | grep ' kubeconform-linux-amd64.tar.gz$' | cut -d' ' -f1)  /tmp/kc.tgz" | sha256sum -c -
+          sudo tar -xzf /tmp/kc.tgz -C /usr/local/bin kubeconform
+      - name: Export sample pipelines
+        run: PF_SAMPLES_DIR=$RUNNER_TEMP/samples dotnet test backend --filter ExportSamples
+      - name: Helm charts, Kyverno policies and Compose files
+        run: scripts/validate-manifests.sh "$RUNNER_TEMP/samples"
+
+  e2e-pipeline:
+    runs-on: ubuntu-24.04
+    needs: backend
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+      - name: Generated pipeline on a real Jenkins
+        run: E2E_WORK=$RUNNER_TEMP/pf-e2e e2e/run.sh
+      - name: Keep the console log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-pipeline
+          path: ${{ runner.temp }}/pf-e2e/console.log
+          if-no-files-found: ignore
+
+  e2e-ui:
+    runs-on: ubuntu-24.04
+    needs: [backend, frontend]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - name: Sign in, build and download a pipeline in the browser
+        run: e2e/ui.sh
+      - name: Keep the Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report
+          if-no-files-found: ignore

@@ -164,4 +164,26 @@ public class DeploySafetyTests
         Assert.Contains("environments[1].database", errors);
         Assert.Contains("environments[1].appSecrets", errors);
     }
+
+    [Fact]
+    public void Compose_binds_where_configured_and_reads_the_host_env_file()
+    {
+        var c = Samples.MavenHelm();
+        foreach (var e in c.Environments) e.Deploy.Type = DeployTargetType.DockerSsh;
+        var test = c.Environments.Single(e => e.Key == "test").Deploy;
+        test.BindAddress = "0.0.0.0";
+        test.HostPort = 18080;
+        test.EnvFile = "app.env";
+        var compose = Files(c)["deploy/docker/compose.test.yml"];
+        Assert.Contains("ports: [\"0.0.0.0:18080:8080\"]", compose);
+        Assert.Contains("env_file: [\"app.env\"]", compose);
+        Assert.Contains("tmpfs: [\"/tmp\"]", compose);
+        Assert.Contains("127.0.0.1:8080:8080", Files(c)["deploy/docker/compose.dev.yml"]);
+
+        test.BindAddress = "0.0.0.0; rm -rf /";
+        test.EnvFile = "../../etc/shadow x";
+        var errors = PipelineGenerator.Generate(c).Errors.Select(e => e.Path).ToList();
+        Assert.Contains("environments[1].deploy.bindAddress", errors);
+        Assert.Contains("environments[1].deploy.envFile", errors);
+    }
 }
