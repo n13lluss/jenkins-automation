@@ -8,6 +8,7 @@ services:
 
   deploy-target:
     build: ./deploy-target
+    group_add: ["${DOCKER_GID:?}"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${E2E_SECRETS:?}:/run/e2e:ro

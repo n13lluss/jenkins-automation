@@ -63,8 +63,8 @@ git -C "$E2E_REPO" -c user.name=e2e -c user.email=e2e@example.com commit -q -m "
 log "Starting registry, deploy target and Jenkins"
 "${COMPOSE[@]}" up -d --build registry deploy-target
 # known_hosts pins the target's host key, read from the container rather than scanned over the network.
-for _ in $(seq 1 30); do "${COMPOSE[@]}" exec -T deploy-target test -s /etc/ssh/ssh_host_ed25519_key.pub 2>/dev/null && break; sleep 1; done
-"${COMPOSE[@]}" exec -T deploy-target cat /etc/ssh/ssh_host_ed25519_key.pub | awk '{print "deploy-target " $1 " " $2}' > "$E2E_SECRETS/known_hosts"
+for _ in $(seq 1 30); do "${COMPOSE[@]}" exec -T deploy-target test -s /opt/orders/app.env 2>/dev/null && break; sleep 1; done
+"${COMPOSE[@]}" exec -T deploy-target cat /home/deploy/sshd/ssh_host_ed25519_key.pub | awk '{print "[deploy-target]:2222 " $1 " " $2}' > "$E2E_SECRETS/known_hosts"
 chmod 644 "$E2E_SECRETS/known_hosts"
 test -s "$E2E_SECRETS/known_hosts"
 "${COMPOSE[@]}" up -d --build jenkins

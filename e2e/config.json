@@ -49,7 +49,7 @@
       "health": { "path": "/actuator/health", "expectedStatus": 200, "successes": 3, "timeoutSeconds": 240 },
       "deploy": {
         "type": "dockerSsh",
-        "host": "deploy-target",
+        "host": "deploy-target:2222",
         "user": "deploy",
         "remoteDir": "/opt/orders",
         "sshCredentialId": "deploy-ssh",
