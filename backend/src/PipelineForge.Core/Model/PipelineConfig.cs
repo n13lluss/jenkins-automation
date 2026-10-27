@@ -29,6 +29,17 @@ public sealed class PipelineConfig
     public PipelineOptions Options { get; set; } = new();
     public MigrationConfig Migrations { get; set; } = new();
     public NotificationConfig Notifications { get; set; } = new();
+    public DeliveryMetricsConfig Metrics { get; set; } = new();
+}
+
+/// <summary>Report every deploy to PipelineForge for the delivery metrics dashboard.</summary>
+public sealed class DeliveryMetricsConfig
+{
+    public bool Enabled { get; set; }
+    /// <summary>Base URL of PipelineForge as Jenkins reaches it, e.g. https://pipelineforge.example.com.</summary>
+    public string Url { get; set; } = "";
+    /// <summary>Secret text holding the pipeline's ingest token.</summary>
+    public string TokenCredentialId { get; set; } = "pipelineforge-ingest";
 }
 
 public enum NotifyEvent { Failure, Fixed, Approval, ProductionDeployed }

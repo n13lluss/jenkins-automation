@@ -860,6 +860,7 @@ public static class StageScriptsWriter
                 {{DIGESTS}}
                 {{VERIFY}}
                 {{MIGRATE}}
+                {{START}}
                 // deployed: the new release reached the target, so a failed health check rolls it back.
                 def deployed = false
                 try {
@@ -884,12 +885,17 @@ public static class StageScriptsWriter
                     if (cfg.rollback) {
                         rollback(common, cfg, deployed)
                     }
+                    {{REPORT_FAILURE}}
                     throw e
                 }
                 {{TAG}}
+                {{REPORT_SUCCESS}}
                 {{MONITOR}}
             }
-            """.Replace("{{PROMOTE}}", ctx.Promotion ? "if (cfg.promoteFrom) {\n        resolvePromoted(common, cfg)\n    }" : "")
+            """.Replace("{{START}}", ctx.Metrics ? "def startedAt = utcNow()" : "")
+               .Replace("{{REPORT_FAILURE}}", ctx.Metrics ? "reportDeployment(common, cfg, 'failure', startedAt)" : "")
+               .Replace("{{REPORT_SUCCESS}}", ctx.Metrics ? "reportDeployment(common, cfg, 'success', startedAt)" : "")
+               .Replace("{{PROMOTE}}", ctx.Promotion ? "if (cfg.promoteFrom) {\n        resolvePromoted(common, cfg)\n    }" : "")
                .Replace("{{DIGESTS}}", string.Join("\n    ", ctx.ImageModules.Select(m => $"common.safe(env.{GenerationContext.DigestVar(m)}, '^sha256:[a-f0-9]{{64}}$', 'image digest (push or promote the image first)')")))
                .Replace("{{TAG}}", ctx.Promotion ? $"if (cfg.key in [{string.Join(", ", ctx.PromotionSources.Order().Select(Quote))}]) {{\n        tagEnvironment(common, cfg)\n    }}" : "")
                .Replace("{{VERIFY}}", ctx.Signing ? "verifyImages(common)" : "// Images are not signed (signing disabled).")
@@ -1094,6 +1100,7 @@ public static class StageScriptsWriter
             }
             """.Replace("{{ROLLBACK}}", string.Join("\n", RollbackCases(ctx))));
         if (ctx.Migrations) Migrate(w, ctx);
+        if (ctx.Metrics) ReportDeployment(w, ctx);
         w.Line().Line("return this");
         return w.ToString();
     }
@@ -1145,6 +1152,56 @@ public static class StageScriptsWriter
                     () => w.Line(flyway ? "sh 'flyway migrate'" : "sh 'liquibase update'")));
             });
         });
+    }
+
+    /// <summary>
+    /// Posts each deploy (success or failure) to PipelineForge for the delivery metrics. The token is written to a
+    /// private header file, never put on a command line, and a failed report never fails the deploy.
+    /// </summary>
+    private static void ReportDeployment(CodeWriter w, GenerationContext ctx)
+    {
+        var m = ctx.Config.Metrics;
+        var digest = ctx.ImageModules.Count > 0 ? $"env.{GenerationContext.DigestVar(ctx.ImageModules[0])}" : "null";
+        w.Line();
+        w.Lines($$"""
+            def utcNow() {
+                return sh(returnStdout: true, script: 'date -u +%Y-%m-%dT%H:%M:%SZ').trim()
+            }
+
+            def reportDeployment(common, Map cfg, String result, String startedAt) {
+                try {
+                    def commitTime = sh(returnStdout: true, script: 'git log -1 --format=%cI 2>/dev/null || true').trim()
+                    def commit = sh(returnStdout: true, script: 'git rev-parse HEAD 2>/dev/null || true').trim()
+                    def event = [
+                        environment: cfg.key,
+                        result: result,
+                        startedAt: startedAt,
+                        finishedAt: utcNow(),
+                        digest: {{digest}},
+                        commit: commit ==~ '^[a-f0-9]{7,64}$' ? commit : null,
+                        commitTime: commitTime ?: null,
+                        buildUrl: env.BUILD_URL,
+                    ]
+                    writeFile file: 'reports/deploy-event.json', text: groovy.json.JsonOutput.toJson(event)
+                    withCredentials([string(credentialsId: {{Quote(m.TokenCredentialId)}}, variable: 'PF_INGEST_TOKEN')]) {
+                        withEnv([{{Quote("PF_INGEST_URL=" + m.Url.TrimEnd('/') + "/api/ingest/deployments")}}]) {
+                            common.inTool('curl') {
+                                sh '''
+                                    set +x
+                                    headers=$(mktemp)
+                                    trap 'rm -f "$headers"' EXIT
+                                    printf 'Authorization: Bearer %s\\n' "$PF_INGEST_TOKEN" > "$headers"
+                                    curl -fsS --max-time 10 -H @"$headers" -H 'Content-Type: application/json' --data-binary @reports/deploy-event.json "$PF_INGEST_URL" -o /dev/null \
+                                        || echo 'Could not report the deploy to PipelineForge; the deploy is not affected.'
+                                '''
+                            }
+                        }
+                    }
+                } catch (e) {
+                    echo "Deploy report failed: ${e.message}"
+                }
+            }
+            """);
     }
 
     public static string HelmKey(string moduleName) => moduleName.Replace('.', '-');

@@ -157,6 +157,7 @@ export function blankConfig(name = "app"): PipelineConfig {
     },
     customStages: [],
     migrations: { tool: "none", path: "src/main/resources/db/migration" },
+    metrics: { enabled: false, url: "", tokenCredentialId: "pipelineforge-ingest" },
     notifications: {
       slack: { enabled: false, channel: "#deployments", tokenCredentialId: null },
       teams: { enabled: false, webhookCredentialId: "teams-webhook" },

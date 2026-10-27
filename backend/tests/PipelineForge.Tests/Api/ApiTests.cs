@@ -159,6 +159,52 @@ public class ApiTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Ingest_tokens_report_deployments_into_the_metrics()
+    {
+        var c = _f.As("ike");
+        var ws = await Workspace(c, "Metrics");
+        await Member(ws, "ike", "mo", "maintainer");
+        var project = await Read(await c.PostAsJsonAsync($"/api/workspaces/{ws}/pipelines", new { name = "orders", source = "blank", config = Samples.MavenHelm() }, Json));
+        var id = project.GetProperty("id").GetGuid();
+        var other = (await Read(await c.PostAsJsonAsync($"/api/workspaces/{ws}/pipelines", new { name = "other", source = "blank", config = Samples.MavenHelm() }, Json))).GetProperty("id").GetGuid();
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await _f.As("mo").PostAsync($"/api/workspaces/{ws}/pipelines/{id}/ingest-tokens", null)).StatusCode);
+        var created = await Read(await c.PostAsync($"/api/workspaces/{ws}/pipelines/{id}/ingest-tokens", null));
+        var token = created.GetProperty("token").GetString()!;
+        Assert.StartsWith("pf_ing_", token);
+        var listed = await (await c.GetAsync($"/api/workspaces/{ws}/pipelines/{id}/ingest-tokens")).Content.ReadAsStringAsync();
+        Assert.DoesNotContain(token, listed);
+
+        HttpRequestMessage Report(string? bearer, object body)
+        {
+            var m = new HttpRequestMessage(HttpMethod.Post, "/api/ingest/deployments") { Content = JsonContent.Create(body) };
+            if (bearer is not null) m.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearer);
+            return m;
+        }
+        var now = DateTimeOffset.UtcNow;
+        var good = new { environment = "prod", result = "success", startedAt = now.AddMinutes(-5), finishedAt = now, commit = "0123abcd", commitTime = now.AddHours(-3), digest = "sha256:" + new string('a', 64), buildUrl = "https://jenkins.example.com/job/x/1/" };
+        var anon = _f.CreateClient();
+
+        Assert.Equal(HttpStatusCode.Accepted, (await anon.SendAsync(Report(token, good))).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anon.SendAsync(Report(null, good))).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anon.SendAsync(Report("pf_ing_" + new string('x', 43), good))).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await anon.SendAsync(Report(token, new { environment = "prod; drop", result = "success", startedAt = now, finishedAt = now }))).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await anon.SendAsync(Report(token, new { environment = "prod", result = "success", startedAt = now, finishedAt = now, buildUrl = "javascript:alert(1)" }))).StatusCode);
+
+        var metrics = await Read(await _f.As("mo").GetAsync($"/api/workspaces/{ws}/pipelines/{id}/metrics?days=30"));
+        var prod = metrics.GetProperty("environments").EnumerateArray().Single();
+        Assert.Equal("prod", prod.GetProperty("environment").GetString());
+        Assert.Equal(1, prod.GetProperty("deploys").GetInt32());
+        Assert.Equal(3, prod.GetProperty("medianLeadTimeHours").GetDouble(), 1);
+        var otherMetrics = await Read(await c.GetAsync($"/api/workspaces/{ws}/pipelines/{other}/metrics"));
+        Assert.Empty(otherMetrics.GetProperty("environments").EnumerateArray());
+
+        var tokenId = created.GetProperty("id").GetGuid();
+        Assert.Equal(HttpStatusCode.NoContent, (await c.DeleteAsync($"/api/workspaces/{ws}/pipelines/{id}/ingest-tokens/{tokenId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anon.SendAsync(Report(token, good))).StatusCode);
+    }
+
+    [Fact]
     public async Task Download_returns_a_zip_and_records_the_run()
     {
         var c = _f.As("dan");

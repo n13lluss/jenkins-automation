@@ -202,6 +202,27 @@ export function OperationsSection(props: SectionProps) {
   return (
     <div className="flex flex-col gap-4">
       <NotificationsCard {...props} />
+      <Card title="Delivery metrics">
+        <div className="flex flex-col gap-3">
+          <Toggle
+            label="Report every deploy to PipelineForge"
+            hint="Environment, digest, commit and timings only. Feeds the Metrics page: deploy frequency, lead time, change failure rate, time to restore."
+            checked={c.metrics.enabled}
+            disabled={readOnly || locked("metrics")}
+            onChange={(v) => update((d) => void (d.metrics.enabled = v))}
+          />
+          {c.metrics.enabled && (
+            <Grid>
+              <Field label="PipelineForge URL" hint="As Jenkins reaches it, e.g. https://pipelineforge.example.com" error={error("metrics.url")}>
+                <Input value={c.metrics.url} disabled={readOnly || locked("metrics")} onChange={(e) => update((d) => void (d.metrics.url = e.target.value.trim()))} />
+              </Field>
+              <Field label="Token credential ID" hint="Secret text; create the token under Actions." error={error("metrics.tokenCredentialId")}>
+                <Input value={c.metrics.tokenCredentialId} disabled={readOnly || locked("metrics")} onChange={(e) => update((d) => void (d.metrics.tokenCredentialId = e.target.value.trim()))} />
+              </Field>
+            </Grid>
+          )}
+        </div>
+      </Card>
       <Card title="Accepted risks">
         <Toggle
           label="Keep accepted risks in one register"

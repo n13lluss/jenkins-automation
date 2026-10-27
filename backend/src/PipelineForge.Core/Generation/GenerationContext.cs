@@ -39,6 +39,7 @@ public sealed class GenerationContext
         return (n.Slack.Enabled || n.Teams.Enabled || n.Email.Enabled) && n.Events.Contains(e);
     }
     public bool Notifications => Enum.GetValues<NotifyEvent>().Any(Notify);
+    public bool Metrics => Config.Metrics.Enabled && DeployEnvironments.Count > 0;
     public bool Exceptions => Config.Security.ExceptionRegister;
     /// <summary>Post-deploy scans that read ignore lists and so need the rendered exception files.</summary>
     public bool ExceptionsOnDeployAgents => Exceptions && (HasDast || Scheduled || Authenticated);
@@ -118,6 +119,7 @@ public sealed class GenerationContext
         if (Signing && DeployEnvironments.Count > 0) Tool(deploy, "cosign");
         if (SnykMonitor) Tool(deploy, "snyk");
         if (Promotion) Tool(deploy, "crane");
+        if (Metrics) Tool(deploy, "curl");
         if (Migrations) Tool(deploy, Config.Migrations.Tool == MigrationTool.Flyway ? "flyway" : "liquibase");
         if (RateLimit || Authenticated || Ticketing || ExceptionsOnDeployAgents) Tool(deploy, "python");
         DeployContainers = deploy;

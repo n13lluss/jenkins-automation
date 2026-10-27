@@ -48,6 +48,8 @@ public static partial class ConfigValidator
 
     public static bool IsIdentifier(string? v) => v is not null && IdentifierRx().IsMatch(v);
     public static bool IsName(string? v) => v is not null && NameRx().IsMatch(v);
+    private static bool IsLocalHttp(string v) =>
+        Uri.TryCreate(v, UriKind.Absolute, out var u) && u.Scheme == Uri.UriSchemeHttp && (u.IsLoopback || u.Host == "host.docker.internal" || !u.Host.Contains('.'));
     public static bool IsJdbcUrl(string? v) => v is not null && JdbcRx().IsMatch(v) && !v.Contains("..");
     public static bool IsRepository(string? v) => v is not null && RepositoryRx().IsMatch(v) && !v.Contains("..");
     public static bool IsBranchPattern(string? v) => v is not null && BranchRx().IsMatch(v) && !v.Contains("..");
@@ -186,6 +188,13 @@ public static partial class ConfigValidator
                     "security.dast.apiSpec", "API scans need an OpenAPI URL or repository path.");
         }
 
+        if (c.Metrics.Enabled)
+        {
+            Check(IsHttpUrl(c.Metrics.Url) && (c.Metrics.Url.StartsWith("https://", StringComparison.Ordinal) || IsLocalHttp(c.Metrics.Url)),
+                "metrics.url", "The https URL of PipelineForge (http only for localhost).");
+            Check(!c.Metrics.Url.Contains('?') && !c.Metrics.Url.Contains('#'), "metrics.url", "A base URL without query or fragment.");
+            Check(IsIdentifier(c.Metrics.TokenCredentialId), "metrics.tokenCredentialId", "Invalid credential ID.");
+        }
         var n = c.Notifications;
         if (n.Slack.Enabled)
         {

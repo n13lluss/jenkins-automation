@@ -47,6 +47,8 @@ public static class DocsWriter
         if (c.Registry is { } reg && ctx.ImageModules.Count > 0) Add(reg.CredentialId, "Username with password", $"Push images to {reg.Host}");
         if (c.Security.DependencyScanners.Contains(DependencyScanner.OwaspDependencyCheck)) Add(c.Security.NvdApiKeyCredentialId, "Secret text", "NVD API key for OWASP Dependency-Check");
         if (c.Security.DependencyScanners.Contains(DependencyScanner.Snyk)) Add(c.Security.SnykCredentialId, "Secret text", "Snyk API token");
+        if (ctx.Metrics)
+            Add(c.Metrics.TokenCredentialId, "Secret text", "PipelineForge ingest token (pipeline → Actions → Delivery metrics)");
         if (ctx.Notifications && c.Notifications.Teams.Enabled)
             Add(c.Notifications.Teams.WebhookCredentialId, "Secret text", "Teams Workflows webhook URL (treat it as a secret)");
         if (ctx.Notifications && c.Notifications.Slack is { Enabled: true, TokenCredentialId: { } slackToken })
@@ -217,6 +219,12 @@ public static class DocsWriter
             sb.AppendLine("Docker hosts: keep application secrets in an `env_file` on the host (owned by the deploy user, mode 600), not in the repository.").AppendLine();
         if (ctx.DeployEnvironments.Any(e => e.Deploy.Type == DeployTargetType.AzureAppService))
             sb.AppendLine("Azure App Service: reference secrets from Key Vault in the app settings (`@Microsoft.KeyVault(...)`) with the app's managed identity.").AppendLine();
+        if (ctx.Metrics)
+        {
+            sb.AppendLine("### Delivery metrics").AppendLine();
+            sb.AppendLine($"Every deploy, successful or not, is reported to `{c.Metrics.Url}` with the environment, image digest, commit and timings (no secrets, no code). "
+                + "Create the ingest token in PipelineForge (pipeline → Actions → Delivery metrics) and store it as the credential above. A failed report never fails the deploy.").AppendLine();
+        }
         if (ctx.Exceptions)
         {
             sb.AppendLine("### Accepted risks").AppendLine();

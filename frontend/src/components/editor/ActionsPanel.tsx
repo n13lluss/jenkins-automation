@@ -2,10 +2,26 @@
 
 import { useEffect, useState } from "react";
 import { api, errorMessage } from "@/lib/api";
-import type { AiReview, Connection, Project, Run } from "@/lib/types";
+import type { AiReview, Connection, IngestToken, Project, Run } from "@/lib/types";
 import { Alert, Badge, Button, Card, Field, Input, Select } from "../ui";
 
-export function ActionsPanel({ ws, project, dirty, selected, canEdit, valid }: { ws: string; project: Project; dirty: boolean; selected: Set<string>; canEdit: boolean; valid: boolean }) {
+export function ActionsPanel({
+  ws,
+  project,
+  dirty,
+  selected,
+  canEdit,
+  admin,
+  valid,
+}: {
+  ws: string;
+  project: Project;
+  dirty: boolean;
+  selected: Set<string>;
+  canEdit: boolean;
+  admin: boolean;
+  valid: boolean;
+}) {
   const [connections, setConnections] = useState<Connection[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
   const files = [...selected].join(",");
@@ -37,6 +53,7 @@ export function ActionsPanel({ ws, project, dirty, selected, canEdit, valid }: {
         {canEdit && project.repository && <BranchProtectionCard ws={ws} project={project} disabled={disabled} />}
         {canEdit && <JenkinsCard ws={ws} project={project} connections={jenkins} disabled={disabled} />}
         {canEdit && <AiCard ws={ws} project={project} connections={ai} disabled={disabled} />}
+        {admin && <IngestTokenCard ws={ws} project={project} />}
       </div>
       {runs.length > 0 && (
         <Card title="History">
@@ -111,6 +128,68 @@ function PullRequestCard({ ws, project, files, disabled }: { ws: string; project
           </Alert>
         )}
         {result?.libraryNote && <Alert tone="warn" title={result.libraryNote} />}
+        {error && <Alert tone="danger" title={error} />}
+      </div>
+    </Card>
+  );
+}
+
+function IngestTokenCard({ ws, project }: { ws: string; project: Project }) {
+  const [tokens, setTokens] = useState<IngestToken[]>([]);
+  const [created, setCreated] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const base = `workspaces/${ws}/pipelines/${project.id}/ingest-tokens`;
+  useEffect(() => {
+    api<IngestToken[]>(base).then(setTokens, (e) => setError(errorMessage(e)));
+  }, [base]);
+  async function create() {
+    setError(null);
+    try {
+      const r = await api<{ token: string }>(base, { method: "POST" });
+      setCreated(r.token);
+      setTokens(await api<IngestToken[]>(base));
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
+  async function revoke(id: string) {
+    setError(null);
+    try {
+      await api(`${base}/${id}`, { method: "DELETE" });
+      setTokens(await api<IngestToken[]>(base));
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
+  return (
+    <Card title="Delivery metrics token">
+      <div className="flex flex-col gap-3">
+        <p className="text-sm text-muted">
+          Jenkins reports each deploy with this token. Store it as the secret text credential <code>{project.config.metrics.tokenCredentialId}</code>; it can only report deploys for this pipeline.
+        </p>
+        <Button onClick={create}>Create token</Button>
+        {created && (
+          <Alert tone="ok" title="Copy the token now; it is not shown again">
+            <code className="break-all text-xs">{created}</code>
+          </Alert>
+        )}
+        {tokens.length > 0 && (
+          <ul className="flex flex-col gap-1 text-sm">
+            {tokens.map((t) => (
+              <li key={t.id} className="flex flex-wrap items-center gap-2">
+                <code className="text-xs">{t.prefix}…</code>
+                <span className="text-muted">{t.lastUsedAt ? `last used ${new Date(t.lastUsedAt).toLocaleString()}` : "never used"}</span>
+                {t.revokedAt ? (
+                  <Badge tone="danger">revoked</Badge>
+                ) : (
+                  <Button variant="ghost" onClick={() => revoke(t.id)}>
+                    Revoke
+                  </Button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
         {error && <Alert tone="danger" title={error} />}
       </div>
     </Card>

@@ -77,6 +77,19 @@ export type AppSecrets = {
   keys: { name: string; remoteKey: string; property?: string | null }[];
 };
 
+export type EnvironmentMetrics = {
+  environment: string;
+  deploys: number;
+  failures: number;
+  deploysPerWeek: number;
+  changeFailureRate?: number | null;
+  medianLeadTimeHours?: number | null;
+  medianTimeToRestoreHours?: number | null;
+  daily: { day: string; successes: number; failures: number }[];
+};
+export type MetricsResponse = { days: number; environments: EnvironmentMetrics[] };
+export type IngestToken = { id: string; prefix: string; createdAt: string; lastUsedAt?: string | null; revokedAt?: string | null };
+
 export type NotifyEvent = "failure" | "fixed" | "approval" | "productionDeployed";
 export type Notifications = {
   slack: { enabled: boolean; channel: string; tokenCredentialId?: string | null };
@@ -172,6 +185,7 @@ export type PipelineConfig = {
   };
   migrations: { tool: MigrationTool; path: string };
   notifications: Notifications;
+  metrics: { enabled: boolean; url: string; tokenCredentialId: string };
   customStages: { name: string; steps: string; origin: "user" | "imported" }[];
   options: { timeoutMinutes: number; buildsToKeep: number; disableConcurrentBuilds: boolean };
 };

@@ -60,6 +60,13 @@ builder.Services.AddRateLimiter(o =>
         RateLimitPartition.GetFixedWindowLimiter(Key(c), _ => new FixedWindowRateLimiterOptions { PermitLimit = 300, Window = TimeSpan.FromMinutes(1) }));
     o.AddPolicy("expensive", c =>
         RateLimitPartition.GetFixedWindowLimiter(Key(c), _ => new FixedWindowRateLimiterOptions { PermitLimit = 20, Window = TimeSpan.FromMinutes(1) }));
+    // Ingest is called by Jenkins with a token, not a user: partition by the token's prefix.
+    o.AddPolicy("ingest", c =>
+    {
+        var auth = c.Request.Headers.Authorization.ToString();
+        var key = auth.StartsWith("Bearer pf_ing_", StringComparison.Ordinal) && auth.Length >= 22 ? auth[7..22] : c.Connection.RemoteIpAddress?.ToString() ?? "anonymous";
+        return RateLimitPartition.GetFixedWindowLimiter("ingest:" + key, _ => new FixedWindowRateLimiterOptions { PermitLimit = 60, Window = TimeSpan.FromMinutes(1) });
+    });
 });
 
 builder.Services.AddProblemDetails();

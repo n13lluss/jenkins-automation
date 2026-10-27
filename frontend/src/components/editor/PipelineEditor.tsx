@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, errorMessage } from "@/lib/api";
 import type { BuiltInPreset, GenerationResponse, PipelineConfig, Preset, Project, RepoProfile } from "@/lib/types";
-import { canEdit, useWorkspace } from "../AppShell";
+import { canEdit, isAdmin, useWorkspace } from "../AppShell";
 import { Alert, Badge, Button, Card, cx, Field, Select, Spinner } from "../ui";
 import { ActionsPanel } from "./ActionsPanel";
 import { OperationsSection } from "./operationsSections";
@@ -41,7 +41,7 @@ const STEPS: Step[] = [
     ),
   },
   { id: "dynamic", label: "Dynamic testing", prefixes: ["security.dast.ephemeral", "security.dast.authenticated", "security.dast.schedule", "rateLimit"], render: (p) => <DynamicTestingSection {...p} /> },
-  { id: "operations", label: "Operations", prefixes: ["migrations", "notifications", "security.exceptionRegister"], render: (p) => <OperationsSection {...p} /> },
+  { id: "operations", label: "Operations", prefixes: ["migrations", "notifications", "metrics", "security.exceptionRegister"], render: (p) => <OperationsSection {...p} /> },
   { id: "ai", label: "AI review", prefixes: ["aiReview"], render: (p) => <AiSection {...p} /> },
   { id: "tickets", label: "Tickets", prefixes: ["ticketing"], render: (p) => <TicketsSection {...p} /> },
   { id: "custom", label: "Custom stages", prefixes: ["customStages"], render: (p) => <CustomStagesSection {...p} /> },
@@ -230,7 +230,7 @@ export function PipelineEditor({ ws, initial, project, source, link, profile, in
           {step === "review" && (
             <Review preview={preview} selected={selected} setSelected={setSelected} onJump={(path) => setStep(STEPS.find((s) => s.prefixes.some((p) => path.startsWith(p)))?.id ?? "project")}>
               {project ? (
-                <ActionsPanel ws={ws} project={project} dirty={dirty} selected={selected} canEdit={!readOnly} valid={!!preview?.success} />
+                <ActionsPanel ws={ws} project={project} dirty={dirty} selected={selected} canEdit={!readOnly} admin={isAdmin(workspace)} valid={!!preview?.success} />
               ) : (
                 <Alert title="Save the pipeline to download it, open a pull request or create the Jenkins job." />
               )}
