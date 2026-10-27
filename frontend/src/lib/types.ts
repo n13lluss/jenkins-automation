@@ -116,6 +116,7 @@ export type PipelineConfig = {
     secretScan: boolean;
     secretScanScope: SecretScanScope;
     dependencyPinning: boolean;
+    exceptionRegister: boolean;
     dockerfileLint: boolean;
     allowedBaseRegistries: string[];
     dependencyScanners: DependencyScanner[];

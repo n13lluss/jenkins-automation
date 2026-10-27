@@ -138,6 +138,15 @@ export function OperationsSection({ config: c, update, error, locked, readOnly }
   const ro = readOnly || locked("migrations");
   return (
     <div className="flex flex-col gap-4">
+      <Card title="Accepted risks">
+        <Toggle
+          label="Keep accepted risks in one register"
+          hint="security/exceptions.yaml lists every accepted finding with owner, ticket and expiry (max 180 days). The build fails on expired entries and renders the scanners' ignore files from it."
+          checked={c.security.exceptionRegister}
+          disabled={readOnly || locked("security.exceptionRegister")}
+          onChange={(v) => update((d) => void (d.security.exceptionRegister = v))}
+        />
+      </Card>
       <Card title="Database migrations">
         <div className="flex flex-col gap-3">
           <Grid>

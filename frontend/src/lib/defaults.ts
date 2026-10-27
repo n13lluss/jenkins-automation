@@ -109,6 +109,7 @@ export function blankConfig(name = "app"): PipelineConfig {
       secretScan: true,
       secretScanScope: "history",
       dependencyPinning: false,
+      exceptionRegister: false,
       dockerfileLint: false,
       allowedBaseRegistries: [],
       dependencyScanners: ["trivyFs"],

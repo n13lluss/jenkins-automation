@@ -209,6 +209,13 @@ public static class DocsWriter
             sb.AppendLine("Docker hosts: keep application secrets in an `env_file` on the host (owned by the deploy user, mode 600), not in the repository.").AppendLine();
         if (ctx.DeployEnvironments.Any(e => e.Deploy.Type == DeployTargetType.AzureAppService))
             sb.AppendLine("Azure App Service: reference secrets from Key Vault in the app settings (`@Microsoft.KeyVault(...)`) with the app's managed identity.").AppendLine();
+        if (ctx.Exceptions)
+        {
+            sb.AppendLine("### Accepted risks").AppendLine();
+            sb.AppendLine($"`security/exceptions.yaml` is the only place to accept a finding. Each entry needs an owner, a ticket and an expiry at most {ExceptionsWriter.MaxDays} days ahead; "
+                + "the *Exception review* stage fails the build when one expires or is incomplete, and renders `.trivyignore`, `.gitleaksignore`, the Dependency-Check suppressions, the Snyk policy and the ZAP rule overrides from it. "
+                + "Do not edit those files by hand. Add the register to CODEOWNERS so the security team reviews every change; `reports/exceptions.md` lists what is accepted in each build.").AppendLine();
+        }
         sb.AppendLine("### Block merges on failed checks").AppendLine();
         sb.AppendLine("Checks only block a merge when Bitbucket or GitHub requires the Jenkins build. Use \"Require the Jenkins build before merge\" in PipelineForge, or set branch protection / merge checks by hand for " + string.Join(", ", c.Environments.Select(e => $"`{e.BranchPattern}`").Distinct()) + ".").AppendLine();
         if (ctx.Scheduled)
@@ -288,6 +295,8 @@ public static class DocsWriter
         "security/maven-enforcer.xml" => "Maven Enforcer plugin snippet for pom.xml",
         "security/.hadolint.yaml" => "Hadolint rules and trusted base registries",
         "jenkins/scripts/provenance.py" => "SLSA build provenance for attestations",
+        "security/exceptions.yaml" => "Accepted risks with owner, ticket and expiry; ignore files are rendered from it",
+        "jenkins/scripts/exceptions.py" => "Checks the exception register and renders the scanners' ignore files",
         "deploy/helm/chart/templates/externalsecret.yaml" => "External Secrets: application secrets from the secret store",
         "deploy/policies/kyverno-policies.yaml" => "Kyverno admission policies (signed images, no :latest, non-root)",
         "jenkins/config/maven-settings.xml" => "Maven mirror to the repository manager",

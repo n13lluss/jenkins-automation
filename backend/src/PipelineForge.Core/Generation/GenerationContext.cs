@@ -33,6 +33,9 @@ public sealed class GenerationContext
     public IReadOnlySet<string> PromotionSources => DeployEnvironments.Where(e => e.PromoteFrom is not null).Select(e => e.PromoteFrom!).ToHashSet();
     public bool Promotion => PromotionSources.Count > 0;
     public bool Migrations => Config.Migrations.Tool is MigrationTool.Flyway or MigrationTool.Liquibase && DeployEnvironments.Any(e => e.Database is not null);
+    public bool Exceptions => Config.Security.ExceptionRegister;
+    /// <summary>Post-deploy scans that read ignore lists and so need the rendered exception files.</summary>
+    public bool ExceptionsOnDeployAgents => Exceptions && (HasDast || Scheduled || Authenticated);
     public bool Ephemeral => Config.Security.Dast.Ephemeral.Enabled && ImageModules.Count > 0;
     public bool Authenticated => Config.Security.Dast.Authenticated.Enabled;
     public bool Scheduled => Config.Security.Dast.Schedule.Enabled;
@@ -90,7 +93,7 @@ public sealed class GenerationContext
         if (Signing) Tool(ci, "cosign");
         if (Attestations) { Tool(ci, "trivy"); Tool(ci, "python"); }
         if (DockerfileLint) Tool(ci, "hadolint");
-        if (config.AiReview.Enabled || Ticketing) Tool(ci, "python");
+        if (config.AiReview.Enabled || Ticketing || Exceptions) Tool(ci, "python");
         if (TicketsFrom(TicketSource.Sonar) && config.Quality.Enabled) Tool(ci, "curl");
         CiContainers = ci;
 
@@ -110,7 +113,7 @@ public sealed class GenerationContext
         if (SnykMonitor) Tool(deploy, "snyk");
         if (Promotion) Tool(deploy, "crane");
         if (Migrations) Tool(deploy, Config.Migrations.Tool == MigrationTool.Flyway ? "flyway" : "liquibase");
-        if (RateLimit || Authenticated || Ticketing) Tool(deploy, "python");
+        if (RateLimit || Authenticated || Ticketing || ExceptionsOnDeployAgents) Tool(deploy, "python");
         DeployContainers = deploy;
     }
 

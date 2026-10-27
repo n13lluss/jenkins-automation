@@ -122,6 +122,8 @@ public static class JenkinsfileWriter
                     w.Line("envs = common.init()");
                 })));
 
+                // Runs on every build so expired or unowned exceptions fail fast, before any scan uses them.
+                if (ctx.Exceptions) ScriptStage(w, "Exception review", "common.applyExceptions()");
                 var checks = ctx.TriggerCondition(c.Triggers.Checks);
                 var package = ctx.TriggerCondition(c.Triggers.Package);
                 if (ctx.Pinning) ScriptStage(w, "Dependency pinning", "security.dependencyPinning(common)");
@@ -230,6 +232,7 @@ public static class JenkinsfileWriter
             w.Block("steps", () => w.Block("script", () =>
             {
                 Materialize(w, ctx);
+                if (ctx.ExceptionsOnDeployAgents) w.Line("unstash 'pf-exceptions'");
                 w.Line(call);
             }));
             w.Block("post", () =>

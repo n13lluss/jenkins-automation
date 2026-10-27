@@ -257,6 +257,11 @@ public sealed class SecurityConfig
     public SecretScanScope SecretScanScope { get; set; } = SecretScanScope.History;
     /// <summary>Fail on floating or unpinned dependency versions (Maven Enforcer).</summary>
     public bool DependencyPinning { get; set; }
+    /// <summary>
+    /// security/exceptions.yaml is the single list of accepted risks (owner, ticket, expiry); the scanners'
+    /// ignore files are rendered from it on every build.
+    /// </summary>
+    public bool ExceptionRegister { get; set; }
     public List<DependencyScanner> DependencyScanners { get; set; } = [DependencyScanner.TrivyFs];
     public bool Sbom { get; set; } = true;
     public bool LicenseCheck { get; set; }

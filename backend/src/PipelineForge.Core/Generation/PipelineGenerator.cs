@@ -80,9 +80,18 @@ public static class PipelineGenerator
         }
         if (c.Quality.Enabled && ctx.SonarMode == SonarMode.Cli) Add("sonar-project.properties", SupportFilesWriter.SonarProperties(ctx));
         if (c.Security.SecretScan) Add("security/.gitleaks.toml", SupportFilesWriter.GitleaksToml);
-        if (ctx.UsesTrivy) Add("security/.trivyignore", SupportFilesWriter.TrivyIgnore);
-        if (c.Security.DependencyScanners.Contains(DependencyScanner.OwaspDependencyCheck))
-            Add("security/dependency-check-suppressions.xml", SupportFilesWriter.DependencyCheckSuppressions);
+        if (ctx.Exceptions)
+        {
+            // The ignore files are rendered from the register on every build.
+            Add("security/exceptions.yaml", ExceptionsWriter.Register(ctx));
+            Add("jenkins/scripts/exceptions.py", ExceptionsWriter.Script);
+        }
+        else
+        {
+            if (ctx.UsesTrivy) Add("security/.trivyignore", SupportFilesWriter.TrivyIgnore);
+            if (c.Security.DependencyScanners.Contains(DependencyScanner.OwaspDependencyCheck))
+                Add("security/dependency-check-suppressions.xml", SupportFilesWriter.DependencyCheckSuppressions);
+        }
         if (ctx.HasDast || ctx.Ephemeral || ctx.Scheduled) Add("security/zap-rules.tsv", SupportFilesWriter.ZapRules(ctx));
 
         var helmEnvs = ctx.DeployEnvironments.Where(e => e.Deploy.Type == DeployTargetType.Helm).ToList();

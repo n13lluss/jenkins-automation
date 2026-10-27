@@ -417,6 +417,7 @@ public static class WorkflowFilesWriter
                     w.Block("steps", () => w.Block("script", () =>
                     {
                         JenkinsfileWriter.Materialize(w, ctx);
+                        if (ctx.Exceptions) w.Line("common.applyExceptions()");
                         w.Line("common = load 'jenkins/stages/common.groovy'");
                         w.Line("dast = load 'jenkins/stages/dast.groovy'");
                         if (ctx.Ticketing) w.Line("tickets = load 'jenkins/stages/tickets.groovy'");

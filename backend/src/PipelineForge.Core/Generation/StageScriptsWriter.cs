@@ -134,6 +134,20 @@ public static class StageScriptsWriter
         w.Line();
         WithProxy(w, ctx);
         w.Line();
+        if (ctx.Exceptions)
+        {
+            w.Lines("""
+                // Checks security/exceptions.yaml (owner, ticket, expiry) and renders the scanners' ignore files from it.
+                // Other agents of this build unstash the rendered files.
+                def applyExceptions() {
+                    inTool('python') {
+                        sh 'python3 jenkins/scripts/exceptions.py security/exceptions.yaml'
+                    }
+                    stash name: 'pf-exceptions', allowEmpty: true, includes: 'security/.trivyignore,security/dependency-check-suppressions.xml,security/zap-rules.tsv,.gitleaksignore,.snyk'
+                }
+                """);
+            w.Line();
+        }
         w.Block("def publishReports()", () =>
         {
             w.Line("archiveArtifacts artifacts: 'reports/**', allowEmptyArchive: true, fingerprint: true");
@@ -546,7 +560,7 @@ public static class StageScriptsWriter
                         var mavenOnly = c.Modules.All(m => m.Ecosystem == Ecosystem.Maven) && ctx.Proxy?.MavenPath is not null;
                         w.Block($"withCredentials([string(credentialsId: {Quote(s.SnykCredentialId)}, variable: 'SNYK_TOKEN')])", () =>
                             w.Block("common.withProxy", () => w.Block("common.inTool('snyk')", () => Status(w, "Snyk",
-                                $"snyk test --all-projects --severity-threshold={s.FailOnSeverity.ToString().ToLowerInvariant()} --sarif-file-output=reports/snyk.sarif{(mavenOnly ? $" --{MavenSettings(ctx)} -Dmaven.repo.local=\"$CI_CACHE/m2\"" : "")}"))));
+                                $"snyk test --all-projects --severity-threshold={s.FailOnSeverity.ToString().ToLowerInvariant()} --sarif-file-output=reports/snyk.sarif{(ctx.Exceptions ? " --policy-path=.snyk" : "")}{(mavenOnly ? $" --{MavenSettings(ctx)} -Dmaven.repo.local=\"$CI_CACHE/m2\"" : "")}"))));
                         break;
                     case DependencyScanner.NpmAudit:
                         var level = s.FailOnSeverity == Severity.Medium ? "moderate" : s.FailOnSeverity.ToString().ToLowerInvariant();
@@ -579,7 +593,7 @@ public static class StageScriptsWriter
             if (s.IacScanner == ScannerTool.Snyk)
                 w.Block($"withCredentials([string(credentialsId: {Quote(s.SnykCredentialId)}, variable: 'SNYK_TOKEN')])", () =>
                     w.Block("common.inTool('snyk')", () =>
-                        w.Line($"sh 'snyk iac test --severity-threshold={s.FailOnSeverity.ToString().ToLowerInvariant()} --sarif-file-output=reports/snyk-iac.sarif .'")));
+                        w.Line($"sh 'snyk iac test --severity-threshold={s.FailOnSeverity.ToString().ToLowerInvariant()} --sarif-file-output=reports/snyk-iac.sarif{(ctx.Exceptions ? " --policy-path=.snyk" : "")} .'")));
             else
                 w.Block("common.inTool('trivy')", () =>
                     w.Line($"sh 'trivy config --cache-dir \"$CI_CACHE/trivy\" --severity {sev} --exit-code 1 --format sarif --output reports/trivy-iac.sarif .'"));
@@ -651,7 +665,7 @@ public static class StageScriptsWriter
                         w.Indent(() =>
                         {
                             foreach (var m in ctx.ImageModules)
-                                w.Line($"snyk container test \"docker-archive:$CI_CACHE/images/{m.Name}.tar\" --severity-threshold={c.Security.FailOnSeverity.ToString().ToLowerInvariant()} --sarif-file-output=reports/snyk-container-{m.Name}.sarif");
+                                w.Line($"snyk container test \"docker-archive:$CI_CACHE/images/{m.Name}.tar\" --severity-threshold={c.Security.FailOnSeverity.ToString().ToLowerInvariant()} --sarif-file-output=reports/snyk-container-{m.Name}.sarif{(ctx.Exceptions ? " --policy-path=.snyk" : "")}");
                         });
                         w.Line("'''");
                     }));
