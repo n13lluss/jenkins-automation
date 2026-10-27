@@ -1,4 +1,6 @@
 # SSH deploy target: the pipeline copies the compose file here and runs docker compose against the host daemon.
+# sshd has to start as root to switch to the deploy user, so this test-only image has no USER.
+# trivy:ignore:AVD-DS-0002
 FROM alpine:3.22
 RUN apk add --no-cache openssh-server docker-cli docker-cli-compose \
     && adduser -D -u 1000 -s /bin/sh deploy \
